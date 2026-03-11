@@ -13,3 +13,10 @@ dicegame/__pycache__/gui.cpython-311.pyc
 dicegame/__pycache__/scoring.cpython-311.pyc
 dicegame/__pycache__/engine.cpython-311.pyc
 __pycache__/test_engine.cpython-311.pyc
+dicegame/__pycache__/__init__.cpython-313.pyc
+dicegame/__pycache__/app.cpython-313.pyc
+dicegame/__pycache__/cli.cpython-313.pyc
+dicegame/__pycache__/constants.cpython-313.pyc
+dicegame/__pycache__/engine.cpython-313.pyc
+dicegame/__pycache__/gui.cpython-313.pyc
+dicegame/__pycache__/scoring.cpython-313.pyc
