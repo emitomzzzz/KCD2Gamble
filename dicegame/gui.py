@@ -20,6 +20,10 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
         ACCENT_LIGHT = "#dcbf8a"
         TEXT = "#2e2418"
         MUTED = "#6b5a49"
+        ACTION_TEXT = "#111111"
+        ACTION_DISABLED_TEXT = "#7a7a7a"
+        SELECTION_TEXT = "#111111"
+        SELECTION_BG = "#d8dccf"
         SUCCESS = "#3c6e47"
         DANGER = "#9b4d36"
 
@@ -165,7 +169,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 self.header_frame,
                 text="摇骰子游戏",
                 bg=self.BG,
-                fg=self.TEXT,
+                fg=self.ACTION_TEXT,
                 font=self.fonts["title"],
             )
             self.title_label.pack(anchor="w")
@@ -227,9 +231,10 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 text="开始新游戏",
                 command=self.start_new_game,
                 bg=self.ACCENT,
-                fg="white",
+                fg=self.ACTION_TEXT,
                 activebackground="#754d2b",
-                activeforeground="white",
+                activeforeground=self.ACTION_TEXT,
+                disabledforeground=self.ACTION_DISABLED_TEXT,
                 relief="flat",
                 padx=18,
                 pady=8,
@@ -244,7 +249,8 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 bg=self.PANEL_ALT,
                 fg=self.TEXT,
                 activebackground="#eadcbf",
-                activeforeground=self.TEXT,
+                activeforeground=self.ACTION_TEXT,
+                disabledforeground=self.ACTION_DISABLED_TEXT,
                 relief="flat",
                 padx=14,
                 pady=8,
@@ -387,9 +393,10 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 self.actions_panel,
                 command=self.roll_current_dice,
                 bg=self.ACCENT,
-                fg="white",
+                fg=self.ACTION_TEXT,
                 activebackground="#754d2b",
-                activeforeground="white",
+                activeforeground=self.ACTION_TEXT,
+                disabledforeground=self.ACTION_DISABLED_TEXT,
                 relief="flat",
                 padx=8,
                 pady=6,
@@ -403,9 +410,10 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 text="拿走所选并计分",
                 command=self.take_selected_dice,
                 bg=self.ACCENT_LIGHT,
-                fg=self.TEXT,
+                fg=self.ACTION_TEXT,
                 activebackground="#cfac68",
-                activeforeground=self.TEXT,
+                activeforeground=self.ACTION_TEXT,
+                disabledforeground=self.ACTION_DISABLED_TEXT,
                 relief="flat",
                 padx=8,
                 pady=6,
@@ -418,9 +426,10 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 self.actions_panel,
                 command=self.continue_turn,
                 bg="#d6e3c7",
-                fg=self.TEXT,
+                fg=self.ACTION_TEXT,
                 activebackground="#bdd3a2",
-                activeforeground=self.TEXT,
+                activeforeground=self.ACTION_TEXT,
+                disabledforeground=self.ACTION_DISABLED_TEXT,
                 relief="flat",
                 padx=8,
                 pady=6,
@@ -434,9 +443,10 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 text="本回合入账",
                 command=self.bank_turn,
                 bg="#e8d4bb",
-                fg=self.TEXT,
+                fg=self.ACTION_TEXT,
                 activebackground="#d9b88c",
-                activeforeground=self.TEXT,
+                activeforeground=self.ACTION_TEXT,
+                disabledforeground=self.ACTION_DISABLED_TEXT,
                 relief="flat",
                 padx=8,
                 pady=6,
@@ -451,8 +461,8 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             self.selection_label = tk.Label(
                 self.actions_panel,
                 textvariable=self.selection_var,
-                bg="#556b32",
-                fg="#edf3d8",
+                bg=self.SELECTION_BG,
+                fg=self.SELECTION_TEXT,
                 justify="center",
                 wraplength=860,
                 font=self.fonts["selection"],
@@ -681,7 +691,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
         def handle_roll_result(self, roll_result):
             self.selected_indices = set()
             self.selection_var.set("当前选择：未选择。")
-            self.selection_label.configure(fg=self.MUTED)
+            self.selection_label.configure(fg=self.SELECTION_TEXT)
             self.status_var.set(f"玩家 {roll_result.player} 已掷骰，请选择要计分的骰子。")
             self.log(f"玩家 {roll_result.player} 掷出：{format_roll(roll_result.dice)}")
             self.refresh_summary()
@@ -744,10 +754,19 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             self.continue_button.configure(text=f"继续掷剩余 {self.remaining_dice} 颗")
 
         def set_button_states(self, roll, take, cont, bank):
-            self.roll_button.configure(state="normal" if roll else "disabled")
-            self.take_button.configure(state="normal" if take else "disabled")
-            self.continue_button.configure(state="normal" if cont else "disabled")
-            self.bank_button.configure(state="normal" if bank else "disabled")
+            self.configure_action_button(self.roll_button, roll)
+            self.configure_action_button(self.take_button, take)
+            self.configure_action_button(self.continue_button, cont)
+            self.configure_action_button(self.bank_button, bank)
+
+        def configure_action_button(self, button, enabled):
+            button.configure(
+                state="normal" if enabled else "disabled",
+                fg=self.ACTION_TEXT if enabled else self.ACTION_DISABLED_TEXT,
+                activeforeground=self.ACTION_TEXT if enabled else self.ACTION_DISABLED_TEXT,
+                disabledforeground=self.ACTION_DISABLED_TEXT,
+            )
+
 
         def render_dice(self):
             for child in self.dice_container.winfo_children():
@@ -885,7 +904,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
         def update_selection_preview(self):
             if not self.selected_indices:
                 self.selection_var.set("当前选择：未选择。")
-                self.selection_label.configure(fg=self.MUTED)
+                self.selection_label.configure(fg=self.SELECTION_TEXT)
                 self.set_button_states(roll=False, take=False, cont=False, bank=False)
                 return
 
@@ -893,17 +912,16 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             selected_values = list(preview.dice)
             if preview.is_valid:
                 self.selection_var.set(f"当前选择：{selected_values}，可获得 {preview.points} 分。")
-                self.selection_label.configure(fg=self.SUCCESS)
+                self.selection_label.configure(fg=self.SELECTION_TEXT)
                 self.set_button_states(roll=False, take=True, cont=False, bank=False)
             else:
                 self.selection_var.set(f"当前选择：{selected_values}，不是有效得分组合。")
-                self.selection_label.configure(fg=self.DANGER)
+                self.selection_label.configure(fg=self.SELECTION_TEXT)
                 self.set_button_states(roll=False, take=False, cont=False, bank=False)
 
         def roll_current_dice(self):
             if self.game_over:
                 return
-
             self.handle_roll_result(self.engine.roll())
 
         def take_selected_dice(self):
@@ -929,7 +947,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
 
             self.selected_indices = set()
             self.selection_var.set("当前选择：已结算。")
-            self.selection_label.configure(fg=self.SUCCESS)
+            self.selection_label.configure(fg=self.SELECTION_TEXT)
             self.refresh_summary()
             self.set_button_states(roll=False, take=False, cont=True, bank=True)
             self.render_dice()
@@ -965,7 +983,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
 
             self.selected_indices = set()
             self.selection_var.set("当前选择：未选择。")
-            self.selection_label.configure(fg=self.MUTED)
+            self.selection_label.configure(fg=self.SELECTION_TEXT)
             self.status_var.set(f"轮到玩家 {next_player}，点击“掷骰”开始回合。")
             self.log(f"轮到玩家 {next_player}。")
             self.refresh_summary()
