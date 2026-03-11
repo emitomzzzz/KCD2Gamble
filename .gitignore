@@ -11,3 +11,5 @@ dicegame/__pycache__/app.cpython-311.pyc
 dicegame/__pycache__/constants.cpython-311.pyc
 dicegame/__pycache__/gui.cpython-311.pyc
 dicegame/__pycache__/scoring.cpython-311.pyc
+dicegame/__pycache__/engine.cpython-311.pyc
+__pycache__/test_engine.cpython-311.pyc

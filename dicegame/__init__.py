@@ -16,6 +16,7 @@ from .constants import (
     STRAIGHT_PATTERNS,
     THREE_OF_A_KIND_BASE_SCORES,
 )
+from .engine import DiceGameEngine, GamePhase, GameState, GameStateError
 from .gui import launch_gui
 from .scoring import (
     counts_key,
@@ -27,6 +28,10 @@ from .scoring import (
 
 __all__ = [
     "DEFAULT_TARGET_SCORE",
+    "DiceGameEngine",
+    "GamePhase",
+    "GameState",
+    "GameStateError",
     "RULES",
     "STRAIGHT_PATTERNS",
     "THREE_OF_A_KIND_BASE_SCORES",

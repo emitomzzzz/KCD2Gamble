@@ -1,8 +1,5 @@
-import random
-
-from .cli import format_roll, roll_dice
 from .constants import DEFAULT_TARGET_SCORE, RULES
-from .scoring import has_scoring_option, score_selection
+from .engine import DiceGameEngine, GamePhase, format_roll
 
 
 def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
@@ -41,16 +38,8 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             self.selection_var = tk.StringVar()
             self.score_vars = {"A": tk.StringVar(value="0"), "B": tk.StringVar(value="0")}
 
-            self.target_score = initial_target
-            self.current_player = "A"
-            self.scores = {"A": 0, "B": 0}
-            self.turn_points = 0
-            self.remaining_dice = 6
-            self.current_roll = []
+            self.engine = DiceGameEngine(target_score=initial_target, seed=initial_seed)
             self.selected_indices = set()
-            self.awaiting_selection = False
-            self.game_over = False
-            self.rng = random.Random(initial_seed)
             self.ui_scale = 1.0
             self.resize_job = None
             self.design_width = self.BASE_WIDTH
@@ -77,6 +66,42 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             self.capture_design_size()
             self.root.bind("<Configure>", self.on_root_resize)
             self.root.after(0, self.force_refresh_scale)
+
+        @property
+        def state(self):
+            return self.engine.state
+
+        @property
+        def target_score(self):
+            return self.state.target_score
+
+        @property
+        def current_player(self):
+            return self.state.current_player
+
+        @property
+        def scores(self):
+            return self.state.scores
+
+        @property
+        def turn_points(self):
+            return self.state.turn_points
+
+        @property
+        def remaining_dice(self):
+            return self.state.remaining_dice
+
+        @property
+        def current_roll(self):
+            return self.state.current_roll
+
+        @property
+        def awaiting_selection(self):
+            return self.state.phase == GamePhase.AWAITING_SELECTION
+
+        @property
+        def game_over(self):
+            return self.state.phase == GamePhase.GAME_OVER
 
         def build_fonts(self, tkfont_module):
             family = "Microsoft YaHei UI"
@@ -653,6 +678,29 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 messagebox.showerror("输入错误", "随机种子必须是整数。")
                 return False
 
+        def handle_roll_result(self, roll_result):
+            self.selected_indices = set()
+            self.selection_var.set("当前选择：未选择。")
+            self.selection_label.configure(fg=self.MUTED)
+            self.status_var.set(f"玩家 {roll_result.player} 已掷骰，请选择要计分的骰子。")
+            self.log(f"玩家 {roll_result.player} 掷出：{format_roll(roll_result.dice)}")
+            self.refresh_summary()
+            self.set_button_states(roll=False, take=False, cont=False, bank=False)
+            self.render_dice()
+
+            if roll_result.has_scoring_option:
+                return
+
+            self.status_var.set(f"玩家 {roll_result.player} 没有得分组合，本回合分数作废。")
+            self.selection_var.set("当前选择：本次掷骰没有可得分组合。")
+            self.log(f"玩家 {roll_result.player} 本次没有得分组合，回合结束。")
+            self.render_dice()
+            messagebox.showinfo(
+                "无得分组合",
+                f"玩家 {roll_result.player} 掷出 {list(roll_result.dice)}，本回合暂存分数作废。",
+            )
+            self.finish_turn(bank_points=False)
+
         def start_new_game(self):
             parsed_target = self.parse_positive_int(self.target_var.get(), "目标分数")
             if parsed_target is False:
@@ -665,16 +713,8 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             if parsed_seed is False:
                 return
 
-            self.target_score = parsed_target
-            self.rng = random.Random(parsed_seed)
-            self.current_player = "A"
-            self.scores = {"A": 0, "B": 0}
-            self.turn_points = 0
-            self.remaining_dice = 6
-            self.current_roll = []
+            self.engine.reset(parsed_target, seed=parsed_seed)
             self.selected_indices = set()
-            self.awaiting_selection = False
-            self.game_over = False
 
             self.clear_log()
             self.log(f"新游戏开始，目标分数：{self.target_score}。")
@@ -849,10 +889,10 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 self.set_button_states(roll=False, take=False, cont=False, bank=False)
                 return
 
-            selected_values = [self.current_roll[index] for index in sorted(self.selected_indices)]
-            points = score_selection(selected_values)
-            if points > 0:
-                self.selection_var.set(f"当前选择：{selected_values}，可获得 {points} 分。")
+            preview = self.engine.preview_selection(self.selected_indices)
+            selected_values = list(preview.dice)
+            if preview.is_valid:
+                self.selection_var.set(f"当前选择：{selected_values}，可获得 {preview.points} 分。")
                 self.selection_label.configure(fg=self.SUCCESS)
                 self.set_button_states(roll=False, take=True, cont=False, bank=False)
             else:
@@ -864,56 +904,30 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             if self.game_over:
                 return
 
-            self.current_roll = roll_dice(self.remaining_dice, self.rng)
-            self.selected_indices = set()
-            self.awaiting_selection = True
-            self.selection_var.set("当前选择：未选择。")
-            self.selection_label.configure(fg=self.MUTED)
-            self.status_var.set(f"玩家 {self.current_player} 已掷骰，请选择要计分的骰子。")
-            self.log(f"玩家 {self.current_player} 掷出：{format_roll(self.current_roll)}")
-            self.refresh_summary()
-            self.set_button_states(roll=False, take=False, cont=False, bank=False)
-            self.render_dice()
-
-            if not has_scoring_option(self.current_roll):
-                self.awaiting_selection = False
-                self.status_var.set(f"玩家 {self.current_player} 没有得分组合，本回合分数作废。")
-                self.selection_var.set("当前选择：本次掷骰没有可得分组合。")
-                self.log(f"玩家 {self.current_player} 本次没有得分组合，回合结束。")
-                self.render_dice()
-                messagebox.showinfo(
-                    "无得分组合",
-                    f"玩家 {self.current_player} 掷出 {self.current_roll}，本回合暂存分数作废。",
-                )
-                self.finish_turn(bank_points=False)
+            self.handle_roll_result(self.engine.roll())
 
         def take_selected_dice(self):
             if self.game_over or not self.selected_indices:
                 return
 
-            selected_values = [self.current_roll[index] for index in sorted(self.selected_indices)]
-            gained = score_selection(selected_values)
-            if gained <= 0:
+            preview = self.engine.preview_selection(self.selected_indices)
+            if not preview.is_valid:
                 messagebox.showwarning("选择无效", "所选骰子不能组成有效得分组合。")
                 return
 
-            self.turn_points += gained
-            self.remaining_dice -= len(selected_values)
+            take_result = self.engine.take_selection(preview.indices)
             self.log(
-                f"玩家 {self.current_player} 拿走 {selected_values}，获得 {gained} 分，"
-                f"本回合暂存 {self.turn_points} 分。"
+                f"玩家 {take_result.player} 拿走 {list(take_result.selected_dice)}，获得 {take_result.points_gained} 分，"
+                f"本回合暂存 {take_result.turn_points} 分。"
             )
 
-            if self.remaining_dice == 0:
-                self.remaining_dice = 6
+            if take_result.hot_dice:
                 self.log("本轮所有骰子都已拿走，下一掷恢复为 6 颗。")
-                self.status_var.set(f"玩家 {self.current_player} 触发热骰，可以重新掷 6 颗骰子。")
+                self.status_var.set(f"玩家 {take_result.player} 触发热骰，可以重新掷 6 颗骰子。")
             else:
-                self.status_var.set(f"玩家 {self.current_player} 可以继续掷骰，或把本回合分数入账。")
+                self.status_var.set(f"玩家 {take_result.player} 可以继续掷骰，或把本回合分数入账。")
 
-            self.current_roll = []
             self.selected_indices = set()
-            self.awaiting_selection = False
             self.selection_var.set("当前选择：已结算。")
             self.selection_label.configure(fg=self.SUCCESS)
             self.refresh_summary()
@@ -923,7 +937,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
         def continue_turn(self):
             if self.game_over:
                 return
-            self.roll_current_dice()
+            self.handle_roll_result(self.engine.continue_turn())
 
         def bank_turn(self):
             if self.game_over or self.turn_points <= 0:
@@ -933,13 +947,10 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
         def finish_turn(self, bank_points):
             player = self.current_player
             if bank_points:
-                self.scores[player] += self.turn_points
-                self.log(f"玩家 {player} 将 {self.turn_points} 分记入总分，总分来到 {self.scores[player]}。")
-                if self.scores[player] >= self.target_score:
-                    self.game_over = True
-                    self.current_roll = []
+                turn_result = self.engine.bank_turn()
+                self.log(f"玩家 {player} 将 {turn_result.banked_points} 分记入总分，总分来到 {turn_result.total_score}。")
+                if turn_result.won:
                     self.selected_indices = set()
-                    self.awaiting_selection = False
                     self.status_var.set(f"玩家 {player} 达到 {self.target_score} 分，赢得对局。")
                     self.selection_var.set("当前选择：对局已结束，点击“开始新游戏”可重新开始。")
                     self.refresh_summary()
@@ -948,14 +959,11 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                     self.log(f"玩家 {player} 获胜。")
                     messagebox.showinfo("游戏结束", f"玩家 {player} 率先达到 {self.target_score} 分，获胜。")
                     return
+                next_player = turn_result.next_player
+            else:
+                next_player = self.engine.finish_farkle_turn().next_player
 
-            next_player = "B" if player == "A" else "A"
-            self.current_player = next_player
-            self.turn_points = 0
-            self.remaining_dice = 6
-            self.current_roll = []
             self.selected_indices = set()
-            self.awaiting_selection = False
             self.selection_var.set("当前选择：未选择。")
             self.selection_label.configure(fg=self.MUTED)
             self.status_var.set(f"轮到玩家 {next_player}，点击“掷骰”开始回合。")

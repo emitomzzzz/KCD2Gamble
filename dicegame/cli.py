@@ -1,11 +1,10 @@
-import random
-
-from .constants import RULES
-from .scoring import has_scoring_option, score_selection
+from .constants import DEFAULT_TARGET_SCORE, RULES
+from .engine import DiceGameEngine, format_roll as engine_format_roll, roll_dice as engine_roll_dice
+from .scoring import score_selection
 
 
 def format_roll(dice):
-    return "  ".join(f"{index + 1}:{value}" for index, value in enumerate(dice))
+    return engine_format_roll(dice)
 
 
 def print_rules():
@@ -16,7 +15,7 @@ def print_rules():
 
 
 def roll_dice(remaining, rng):
-    return [rng.randint(1, 6) for _ in range(remaining)]
+    return list(engine_roll_dice(remaining, rng))
 
 
 def parse_indices(raw_text, max_index):
@@ -75,52 +74,53 @@ def choose_turn_action():
         print("请输入 r 或 b。")
 
 
-def play_turn(player_name, total_score, rng):
-    remaining = 6
-    turn_points = 0
-
+def _play_cli_turn(engine, player_name, total_score):
     print(f"\n{player_name} 的回合，当前总分: {total_score}")
+    roll_result = engine.roll()
 
     while True:
-        roll = roll_dice(remaining, rng)
-        print(f"掷出 {remaining} 颗骰子: {format_roll(roll)}")
+        print(f"掷出 {len(roll_result.dice)} 颗骰子: {format_roll(roll_result.dice)}")
 
-        if not has_scoring_option(roll):
+        if not roll_result.has_scoring_option:
             print("本次没有任何得分组合，本回合暂存分数作废。")
+            engine.finish_farkle_turn()
             return 0
 
-        _, selected, gained = choose_scoring_dice(roll)
-        turn_points += gained
-        remaining -= len(selected)
-        print(f"拿走 {selected}，获得 {gained} 分，回合暂存 {turn_points} 分。")
+        indices, selected, _ = choose_scoring_dice(roll_result.dice)
+        take_result = engine.take_selection(indices)
+        print(f"拿走 {selected}，获得 {take_result.points_gained} 分，回合暂存 {take_result.turn_points} 分。")
 
-        if remaining == 0:
-            remaining = 6
+        if take_result.hot_dice:
             print("所有骰子都已拿走，下一掷恢复为 6 颗骰子。")
 
         action = choose_turn_action()
         if action == "b":
-            print(f"{player_name} 结束回合，{turn_points} 分计入总分。")
-            return turn_points
+            bank_result = engine.bank_turn()
+            print(f"{player_name} 结束回合，{bank_result.banked_points} 分计入总分。")
+            return bank_result.banked_points
+
+        roll_result = engine.continue_turn()
+
+
+def play_turn(player_name, total_score, rng):
+    engine = DiceGameEngine(
+        target_score=DEFAULT_TARGET_SCORE,
+        rng=rng,
+        players=(player_name, f"{player_name}_other"),
+    )
+    return _play_cli_turn(engine, player_name, total_score)
 
 
 def play_game(target_score, seed=None):
-    rng = random.Random(seed)
-    scores = {"A": 0, "B": 0}
-    players = ["A", "B"]
-    turn = 0
+    engine = DiceGameEngine(target_score=target_score, seed=seed)
 
     print_rules()
     print(f"游戏开始，先达到 {target_score} 分的玩家获胜。")
 
-    while True:
-        player = players[turn % 2]
-        gained = play_turn(player, scores[player], rng)
-        scores[player] += gained
-        print(f"当前比分: A = {scores['A']}，B = {scores['B']}")
+    while engine.state.winner is None:
+        player = engine.state.current_player
+        _play_cli_turn(engine, player, engine.state.scores[player])
+        print(f"当前比分: A = {engine.state.scores['A']}，B = {engine.state.scores['B']}")
 
-        if scores[player] >= target_score:
-            print(f"\n玩家 {player} 达到目标分数，获得胜利。")
-            return player, scores
-
-        turn += 1
+    print(f"\n玩家 {engine.state.winner} 达到目标分数，获得胜利。")
+    return engine.state.winner, dict(engine.state.scores)
