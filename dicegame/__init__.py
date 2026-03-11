@@ -1,5 +1,5 @@
-from dicegame.app import build_parser, main
-from dicegame.cli import (
+from .app import build_parser, main
+from .cli import (
     choose_scoring_dice,
     choose_turn_action,
     format_roll,
@@ -10,14 +10,14 @@ from dicegame.cli import (
     print_rules,
     roll_dice,
 )
-from dicegame.constants import (
+from .constants import (
     DEFAULT_TARGET_SCORE,
     RULES,
     STRAIGHT_PATTERNS,
     THREE_OF_A_KIND_BASE_SCORES,
 )
-from dicegame.gui import launch_gui
-from dicegame.scoring import (
+from .gui import launch_gui
+from .scoring import (
     counts_key,
     has_scoring_option,
     score_counts,
@@ -48,7 +48,3 @@ __all__ = [
     "score_of_kind",
     "score_selection",
 ]
-
-
-if __name__ == "__main__":
-    main()

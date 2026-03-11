@@ -1,6 +1,6 @@
 import unittest
 
-from dice_game import has_scoring_option, score_selection
+from dicegame.scoring import has_scoring_option, score_selection
 
 
 class ScoreSelectionTests(unittest.TestCase):

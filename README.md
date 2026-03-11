@@ -23,6 +23,15 @@ python dice_game.py --gui --target 3000 --seed 7
 python dice_game.py --target 3000 --seed 7
 ```
 
+## 项目结构
+
+- `dice_game.py`: 顶层兼容入口，保留原有运行方式
+- `dicegame/constants.py`: 游戏常量和计分规则文案
+- `dicegame/scoring.py`: 计分计算与可得分判断
+- `dicegame/cli.py`: 命令行交互和回合流程
+- `dicegame/gui.py`: `tkinter` 图形界面
+- `dicegame/app.py`: 启动参数解析与程序入口
+
 ## 图形界面说明
 
 - 顶部可以设置目标分数和随机种子，并随时开始新游戏

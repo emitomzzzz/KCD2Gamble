@@ -5,3 +5,9 @@ gcm_login.err
 gcm_login.out
 __pycache__/dice_game.cpython-311.pyc
 __pycache__/test_dice_game.cpython-311.pyc
+dicegame/__pycache__/cli.cpython-311.pyc
+dicegame/__pycache__/__init__.cpython-311.pyc
+dicegame/__pycache__/app.cpython-311.pyc
+dicegame/__pycache__/constants.cpython-311.pyc
+dicegame/__pycache__/gui.cpython-311.pyc
+dicegame/__pycache__/scoring.cpython-311.pyc
