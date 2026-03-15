@@ -20,10 +20,14 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
         ACCENT_LIGHT = "#dcbf8a"
         TEXT = "#2e2418"
         MUTED = "#6b5a49"
+        FELT_BG = "#62743c"
+        FELT_BORDER = "#435028"
+        FELT_TEXT = "#f4f1e8"
+        FELT_MUTED = "#dbe3c7"
         ACTION_TEXT = "#111111"
         ACTION_DISABLED_TEXT = "#7a7a7a"
         SELECTION_TEXT = "#111111"
-        SELECTION_BG = "#d8dccf"
+        SELECTION_BG = "#62743c"
         SUCCESS = "#3c6e47"
         DANGER = "#9b4d36"
 
@@ -40,6 +44,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             self.turn_points_var = tk.StringVar()
             self.remaining_var = tk.StringVar()
             self.selection_var = tk.StringVar()
+            self.target_score_display_var = tk.StringVar(value=str(initial_target))
             self.score_vars = {"A": tk.StringVar(value="0"), "B": tk.StringVar(value="0")}
 
             self.engine = DiceGameEngine(target_score=initial_target, seed=initial_seed)
@@ -263,98 +268,119 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             self.main_frame = tk.Frame(self.root, bg=self.BG)
             self.main_frame.pack(fill="both", expand=True, padx=24, pady=(0, 24))
             self.main_frame.grid_columnconfigure(0, weight=1)
-            self.main_frame.grid_rowconfigure(0, weight=0)
-            self.main_frame.grid_rowconfigure(1, weight=1)
+            self.main_frame.grid_rowconfigure(0, weight=1)
 
-            self.build_scoreboard(self.main_frame)
             self.build_throw_stage(self.main_frame)
+            self.build_scoreboard(self.felt_frame)
             self.build_actions(self.felt_frame)
+            self.layout_felt_overlays()
 
         def build_scoreboard(self, parent):
-            self.scoreboard_panel = tk.Frame(
-                parent, bg=self.PANEL, highlightthickness=1, highlightbackground="#dcc8a5"
+            self.scoreboard_panel = tk.Frame(parent, bg=self.FELT_BG, highlightthickness=0, bd=0)
+
+            self.players_bar = tk.Frame(self.scoreboard_panel, bg=self.FELT_BG, highlightthickness=0, bd=0)
+            self.players_bar.grid(row=0, column=0, sticky="w")
+
+            a_name = tk.Label(
+                self.players_bar,
+                text="玩家A",
+                bg=self.FELT_BG,
+                fg=self.FELT_MUTED,
+                font=self.fonts["body"],
             )
-            self.scoreboard_panel.grid(row=0, column=0, sticky="ew", pady=(0, 16))
-            for column in range(3):
-                self.scoreboard_panel.grid_columnconfigure(column, weight=1)
+            a_name.grid(row=0, column=0, sticky="w")
+            a_score = tk.Label(
+                self.players_bar,
+                textvariable=self.score_vars["A"],
+                bg=self.FELT_BG,
+                fg=self.FELT_TEXT,
+                font=self.fonts["summary_bold"],
+            )
+            a_score.grid(row=1, column=0, sticky="w")
+            self.player_cards["A"] = {"name": a_name, "score": a_score}
 
-            for column, player in enumerate(("A", "B")):
-                frame = tk.Frame(
-                    self.scoreboard_panel,
-                    bg=self.PANEL_ALT,
-                    highlightthickness=2,
-                    highlightbackground="#d7c19c",
-                )
-                frame.grid(row=0, column=column, padx=14, pady=14, sticky="nsew")
-                name_label = tk.Label(
-                    frame,
-                    text=f"玩家 {player}",
-                    bg=self.PANEL_ALT,
-                    fg=self.TEXT,
-                    font=self.fonts["summary"],
-                )
-                name_label.pack(anchor="w", padx=14, pady=(14, 6))
-                score_label = tk.Label(
-                    frame,
-                    textvariable=self.score_vars[player],
-                    bg=self.PANEL_ALT,
-                    fg=self.TEXT,
-                    font=self.fonts["score"],
-                )
-                score_label.pack(anchor="w", padx=14, pady=(0, 14))
-                self.player_cards[player] = {
-                    "frame": frame,
-                    "name": name_label,
-                    "score": score_label,
-                }
+            self.target_card_title = tk.Label(
+                self.players_bar,
+                text="目标分数",
+                bg=self.FELT_BG,
+                fg=self.FELT_MUTED,
+                font=self.fonts["body"],
+            )
+            self.target_card_title.grid(row=0, column=1, sticky="w")
+            self.target_card_score = tk.Label(
+                self.players_bar,
+                textvariable=self.target_score_display_var,
+                bg=self.FELT_BG,
+                fg=self.FELT_TEXT,
+                font=self.fonts["summary_bold"],
+            )
+            self.target_card_score.grid(row=1, column=1, sticky="w")
 
-            self.summary_frame = tk.Frame(self.scoreboard_panel, bg=self.PANEL)
-            self.summary_frame.grid(row=0, column=2, padx=14, pady=14, sticky="nsew")
+            b_name = tk.Label(
+                self.players_bar,
+                text="玩家B",
+                bg=self.FELT_BG,
+                fg=self.FELT_MUTED,
+                font=self.fonts["body"],
+            )
+            b_name.grid(row=0, column=2, sticky="w")
+            b_score = tk.Label(
+                self.players_bar,
+                textvariable=self.score_vars["B"],
+                bg=self.FELT_BG,
+                fg=self.FELT_TEXT,
+                font=self.fonts["summary_bold"],
+            )
+            b_score.grid(row=1, column=2, sticky="w")
+            self.player_cards["B"] = {"name": b_name, "score": b_score}
+
+            self.summary_frame = tk.Frame(self.scoreboard_panel, bg=self.FELT_BG, highlightthickness=0, bd=0)
+            self.summary_frame.grid(row=1, column=0, sticky="w")
             self.summary_title = tk.Label(
                 self.summary_frame,
                 text="当前回合",
-                bg=self.PANEL,
-                fg=self.MUTED,
+                bg=self.FELT_BG,
+                fg=self.FELT_MUTED,
                 font=self.fonts["label_bold"],
             )
-            self.summary_title.pack(anchor="w")
-            self.summary_status = tk.Label(
-                self.summary_frame,
-                textvariable=self.status_var,
-                bg=self.PANEL,
-                fg=self.TEXT,
-                justify="left",
-                wraplength=260,
-                font=self.fonts["summary"],
-            )
-            self.summary_status.pack(anchor="w", pady=(6, 12))
+            self.summary_title.grid(row=0, column=0, sticky="w")
             self.summary_turn_points = tk.Label(
                 self.summary_frame,
                 textvariable=self.turn_points_var,
-                bg=self.PANEL,
-                fg=self.SUCCESS,
+                bg=self.FELT_BG,
+                fg=self.FELT_TEXT,
                 font=self.fonts["summary_bold"],
             )
-            self.summary_turn_points.pack(anchor="w", pady=(0, 6))
+            self.summary_turn_points.grid(row=1, column=0, sticky="w")
             self.summary_remaining = tk.Label(
                 self.summary_frame,
                 textvariable=self.remaining_var,
-                bg=self.PANEL,
-                fg=self.TEXT,
+                bg=self.FELT_BG,
+                fg=self.FELT_MUTED,
                 font=self.fonts["summary"],
             )
-            self.summary_remaining.pack(anchor="w")
+            self.summary_remaining.grid(row=2, column=0, sticky="w")
+            self.summary_status = tk.Label(
+                self.summary_frame,
+                textvariable=self.status_var,
+                bg=self.FELT_BG,
+                fg=self.FELT_TEXT,
+                justify="left",
+                wraplength=320,
+                font=self.fonts["summary"],
+            )
+            self.summary_status.grid(row=3, column=0, sticky="w")
 
         def build_throw_stage(self, parent):
             self.stage_panel = tk.Frame(
                 parent, bg=self.PANEL, highlightthickness=1, highlightbackground="#dcc8a5"
             )
-            self.stage_panel.grid(row=1, column=0, sticky="nsew", pady=(0, 16))
+            self.stage_panel.grid(row=0, column=0, sticky="nsew")
             self.stage_panel.grid_rowconfigure(1, weight=1)
             self.stage_panel.grid_columnconfigure(0, weight=1)
 
             self.stage_header = tk.Frame(self.stage_panel, bg=self.PANEL)
-            self.stage_header.grid(row=0, column=0, padx=18, pady=(18, 12), sticky="ew")
+            self.stage_header.grid(row=0, column=0, padx=18, pady=(14, 8), sticky="ew")
             self.stage_header.grid_columnconfigure(0, weight=1)
 
             self.stage_title = tk.Label(
@@ -375,19 +401,17 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             self.stage_hint.grid(row=1, column=0, pady=(6, 0), sticky="w")
 
             self.felt_frame = tk.Frame(
-                self.stage_panel, bg="#62743c", highlightthickness=1, highlightbackground="#435028"
+                self.stage_panel, bg=self.FELT_BG, highlightthickness=1, highlightbackground=self.FELT_BORDER
             )
-            self.felt_frame.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
-            self.felt_frame.grid_rowconfigure(0, weight=1)
-            self.felt_frame.grid_rowconfigure(1, weight=0)
-            self.felt_frame.grid_columnconfigure(0, weight=1)
+            self.felt_frame.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="nsew")
 
-            self.dice_container = tk.Frame(self.felt_frame, bg="#62743c")
-            self.dice_container.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+            self.dice_container = tk.Frame(self.felt_frame, bg=self.FELT_BG)
+            self.dice_container.place(relx=0.5, rely=0.5, anchor="center")
 
         def build_actions(self, parent):
-            self.actions_panel = tk.Frame(parent, bg="#556b32", highlightthickness=0, bd=0)
-            self.actions_panel.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 20))
+            self.actions_panel = tk.Frame(
+                parent, bg=self.FELT_BG, highlightthickness=0, bd=0
+            )
 
             self.roll_button = tk.Button(
                 self.actions_panel,
@@ -403,7 +427,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 cursor="hand2",
                 font=self.fonts["button"],
             )
-            self.roll_button.grid(row=0, column=0, padx=8, pady=(10, 8), sticky="ew")
+            self.roll_button.grid(row=0, column=0, padx=(10, 6), pady=(10, 6), sticky="ew")
 
             self.take_button = tk.Button(
                 self.actions_panel,
@@ -420,7 +444,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 cursor="hand2",
                 font=self.fonts["button"],
             )
-            self.take_button.grid(row=0, column=1, padx=8, pady=(10, 8), sticky="ew")
+            self.take_button.grid(row=0, column=1, padx=(6, 10), pady=(10, 6), sticky="ew")
 
             self.continue_button = tk.Button(
                 self.actions_panel,
@@ -436,7 +460,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 cursor="hand2",
                 font=self.fonts["button"],
             )
-            self.continue_button.grid(row=0, column=2, padx=8, pady=(10, 8), sticky="ew")
+            self.continue_button.grid(row=1, column=0, padx=(10, 6), pady=6, sticky="ew")
 
             self.bank_button = tk.Button(
                 self.actions_panel,
@@ -453,9 +477,9 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 cursor="hand2",
                 font=self.fonts["button"],
             )
-            self.bank_button.grid(row=0, column=3, padx=8, pady=(10, 8), sticky="ew")
+            self.bank_button.grid(row=1, column=1, padx=(6, 10), pady=6, sticky="ew")
 
-            for column in range(4):
+            for column in range(2):
                 self.actions_panel.grid_columnconfigure(column, weight=1)
 
             self.selection_label = tk.Label(
@@ -464,10 +488,15 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 bg=self.SELECTION_BG,
                 fg=self.SELECTION_TEXT,
                 justify="center",
-                wraplength=860,
+                wraplength=320,
                 font=self.fonts["selection"],
             )
-            self.selection_label.grid(row=1, column=0, columnspan=4, padx=12, pady=(0, 10), sticky="ew")
+            self.selection_label.grid(row=2, column=0, columnspan=2, padx=10, pady=(2, 10), sticky="ew")
+
+        def layout_felt_overlays(self):
+            self.dice_container.place(relx=0.5, rely=0.5, anchor="center")
+            self.scoreboard_panel.place(x=self.scaled(18), rely=1.0, y=-self.scaled(18), anchor="sw")
+            self.actions_panel.place(relx=1.0, x=-self.scaled(18), rely=1.0, y=-self.scaled(18), anchor="se")
 
         def build_rules_panel(self, parent):
             self.rules_panel = tk.Frame(
@@ -619,31 +648,34 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                 pady=self.scaled(8),
             )
 
-            self.scoreboard_panel.grid_configure(pady=(0, self.scaled(16)))
-            self.summary_frame.grid_configure(padx=self.scaled(14), pady=self.scaled(14))
+            self.players_bar.grid_configure(padx=self.scaled(6), pady=(self.scaled(4), self.scaled(6)))
+            self.summary_frame.grid_configure(padx=self.scaled(6), pady=(self.scaled(10), 0))
             self.summary_title.configure(font=self.fonts["label_bold"])
-            self.summary_status.configure(font=self.fonts["summary"], wraplength=self.scaled(260))
-            self.summary_status.pack_configure(pady=(self.scaled(6), self.scaled(12)))
+            self.summary_status.configure(font=self.fonts["summary"], wraplength=self.scaled(320))
             self.summary_turn_points.configure(font=self.fonts["summary_bold"])
-            self.summary_turn_points.pack_configure(pady=(0, self.scaled(6)))
             self.summary_remaining.configure(font=self.fonts["summary"])
+            self.target_card_title.configure(font=self.fonts["body"])
+            self.target_card_score.configure(font=self.fonts["summary_bold"])
 
-            for card in self.player_cards.values():
-                card["frame"].grid_configure(padx=self.scaled(14), pady=self.scaled(14))
-                card["name"].pack_configure(padx=self.scaled(14), pady=(self.scaled(14), self.scaled(6)))
-                card["score"].pack_configure(padx=self.scaled(14), pady=(0, self.scaled(14)))
-                card["name"].configure(font=self.fonts["summary"])
-                card["score"].configure(font=self.fonts["score"])
+            self.player_cards["A"]["name"].grid_configure(padx=(0, self.scaled(22)), pady=(0, 0))
+            self.player_cards["A"]["score"].grid_configure(padx=(0, self.scaled(22)), pady=(self.scaled(2), 0))
+            self.target_card_title.grid_configure(padx=(0, self.scaled(22)), pady=(0, 0))
+            self.target_card_score.grid_configure(padx=(0, self.scaled(22)), pady=(self.scaled(2), 0))
+            self.player_cards["B"]["name"].grid_configure(padx=0, pady=(0, 0))
+            self.player_cards["B"]["score"].grid_configure(padx=0, pady=(self.scaled(2), 0))
 
-            self.stage_panel.grid_configure(pady=(0, self.scaled(16)))
-            self.stage_header.grid_configure(padx=self.scaled(18), pady=(self.scaled(18), self.scaled(12)))
+            for player in ("A", "B"):
+                card = self.player_cards[player]
+                card["name"].configure(font=self.fonts["body"])
+                card["score"].configure(font=self.fonts["summary_bold"])
+
+            self.stage_header.grid_configure(padx=self.scaled(18), pady=(self.scaled(14), self.scaled(8)))
             self.stage_title.configure(font=self.fonts["section"])
             self.stage_hint.configure(font=self.fonts["body"])
             self.stage_hint.grid_configure(pady=(self.scaled(6), 0))
-            self.felt_frame.grid_configure(padx=self.scaled(18), pady=(0, self.scaled(18)))
-            self.dice_container.grid_configure(padx=self.scaled(20), pady=self.scaled(20))
+            self.felt_frame.grid_configure(padx=self.scaled(12), pady=(0, self.scaled(12)))
+            self.layout_felt_overlays()
 
-            self.actions_panel.grid_configure(padx=self.scaled(20), pady=(0, self.scaled(20)))
             for button in (
                 self.roll_button,
                 self.take_button,
@@ -655,12 +687,12 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
                     padx=self.scaled(8),
                     pady=self.scaled(6),
                 )
-            self.roll_button.grid_configure(padx=self.scaled(8), pady=(self.scaled(10), self.scaled(8)))
-            self.take_button.grid_configure(padx=self.scaled(8), pady=(self.scaled(10), self.scaled(8)))
-            self.continue_button.grid_configure(padx=self.scaled(8), pady=(self.scaled(10), self.scaled(8)))
-            self.bank_button.grid_configure(padx=self.scaled(8), pady=(self.scaled(10), self.scaled(8)))
-            self.selection_label.configure(font=self.fonts["selection"], wraplength=self.scaled(860))
-            self.selection_label.grid_configure(padx=self.scaled(12), pady=(0, self.scaled(10)))
+            self.roll_button.grid_configure(padx=(self.scaled(10), self.scaled(6)), pady=(self.scaled(10), self.scaled(6)))
+            self.take_button.grid_configure(padx=(self.scaled(6), self.scaled(10)), pady=(self.scaled(10), self.scaled(6)))
+            self.continue_button.grid_configure(padx=(self.scaled(10), self.scaled(6)), pady=self.scaled(6))
+            self.bank_button.grid_configure(padx=(self.scaled(6), self.scaled(10)), pady=self.scaled(6))
+            self.selection_label.configure(font=self.fonts["selection"], wraplength=self.scaled(320))
+            self.selection_label.grid_configure(padx=self.scaled(10), pady=(self.scaled(2), self.scaled(10)))
             self.update_rules_window_scale()
 
         def clear_log(self):
@@ -739,19 +771,19 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
             self.render_dice()
 
         def refresh_summary(self):
+            self.target_score_display_var.set(str(self.target_score))
             self.turn_points_var.set(f"本回合暂存：{self.turn_points} 分")
-            self.remaining_var.set(f"待掷骰子：{self.remaining_dice} 颗   目标分数：{self.target_score}")
+            self.remaining_var.set(f"剩余骰子：{self.remaining_dice}颗")
             for player in ("A", "B"):
                 self.score_vars[player].set(str(self.scores[player]))
                 active = player == self.current_player and not self.game_over
-                bg = self.ACCENT_LIGHT if active else self.PANEL_ALT
-                name_fg = self.TEXT if active else self.MUTED
-                self.player_cards[player]["frame"].configure(bg=bg)
-                self.player_cards[player]["name"].configure(bg=bg, fg=name_fg)
-                self.player_cards[player]["score"].configure(bg=bg, fg=self.TEXT)
+                name_fg = self.FELT_TEXT if active else self.FELT_MUTED
+                score_fg = self.FELT_TEXT if active else "#dce6c8"
+                self.player_cards[player]["name"].configure(bg=self.FELT_BG, fg=name_fg)
+                self.player_cards[player]["score"].configure(bg=self.FELT_BG, fg=score_fg)
 
-            self.roll_button.configure(text=f"掷 {self.remaining_dice} 颗骰子")
-            self.continue_button.configure(text=f"继续掷剩余 {self.remaining_dice} 颗")
+            self.roll_button.configure(text=f"剩余 {self.remaining_dice} 颗骰子")
+            self.continue_button.configure(text=f"继续扔 {self.remaining_dice} 颗骰子")
 
         def set_button_states(self, roll, take, cont, bank):
             self.configure_action_button(self.roll_button, roll)
