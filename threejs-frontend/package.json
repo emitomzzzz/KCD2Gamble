@@ -1,0 +1,21 @@
+{
+  "name": "kcd2gamble-threejs-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:frontend": "vite",
+    "dev:backend": "python -m uvicorn backend.app:app --reload --port 8000",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.179.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0"
+  }
+}
