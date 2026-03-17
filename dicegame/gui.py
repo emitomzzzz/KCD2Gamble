@@ -33,7 +33,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
 
         def __init__(self, master, initial_target, initial_seed):
             self.root = master
-            self.root.title("摇骰子游戏")
+            self.root.title("Farkle Dice Game")
             self.root.configure(bg=self.BG)
             self.root.geometry(f"{self.BASE_WIDTH}x{self.BASE_HEIGHT}")
             self.root.minsize(520, 360)
@@ -172,7 +172,7 @@ def launch_gui(target_score=DEFAULT_TARGET_SCORE, seed=None):
 
             self.title_label = tk.Label(
                 self.header_frame,
-                text="摇骰子游戏",
+                text="Farkle Dice Game",
                 bg=self.BG,
                 fg=self.ACTION_TEXT,
                 font=self.fonts["title"],
