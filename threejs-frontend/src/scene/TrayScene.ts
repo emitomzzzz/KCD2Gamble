@@ -45,7 +45,7 @@ const ROLL_TARGET_PULL_EARLY = 0.82;
 const ROLL_TARGET_PULL_END_PROGRESS = 0.42;
 const WALL_BOUNCE_RESTITUTION = 0.18;
 const PLAY_AREA_MARGIN = DIE_SIZE * 0.82;
-const REST_LAYOUT_CENTER_Z = -TRAY_DEPTH * 0.06;
+const REST_LAYOUT_CENTER_Z = 0;
 const DIE_COLLISION_DISTANCE = DIE_SIZE * 1.24;
 const DIE_COLLISION_HEIGHT = DIE_SIZE * 1.1;
 const HOVER_LIFT = 0.06;
@@ -60,6 +60,12 @@ const CAMERA_FORWARD_OFFSET = 0.08;
 const CAMERA_FRAME_MARGIN = 0.94;
 const CAMERA_MIN_DISTANCE = 12;
 const CAMERA_MAX_DISTANCE = 64;
+const THROW_BOTTOM_ENTRY_OFFSET = 0.34;
+const THROW_START_HEIGHT_MIN = 3.1;
+const THROW_START_HEIGHT_MAX = 4.1;
+const THROW_LANE_SPREAD_X = DIE_SIZE * 0.5;
+const THROW_SIDE_JITTER = TRAY_WIDTH * 0.16;
+const TAKEN_DIE_SCALE = 0.92;
 
 type DieFace = 'px' | 'nx' | 'py' | 'ny' | 'pz' | 'nz';
 
@@ -84,7 +90,7 @@ interface TakeAnimationState {
   startPosition: Vector3;
   targetPosition: Vector3;
   startRotation: Vector3;
-  spinRotation: Vector3;
+  targetRotation: Vector3;
   startScale: number;
   targetScale: number;
   selected: boolean;
@@ -111,9 +117,11 @@ export class TrayScene {
   private readonly scene: Scene;
   private readonly camera: PerspectiveCamera;
   private readonly diceGroup: Group;
+  private readonly takenDiceGroup: Group;
   private readonly raycaster: Raycaster;
   private readonly pointer: Vector2;
   private diceMeshes: DieMesh[] = [];
+  private takenDiceMeshes: DieMesh[] = [];
   private selectedIndices = new Set<number>();
   private hoveredIndex: number | null = null;
   private interactive = false;
@@ -143,6 +151,7 @@ export class TrayScene {
     this.updateCameraFrame();
 
     this.diceGroup = new Group();
+    this.takenDiceGroup = new Group();
     this.raycaster = new Raycaster();
     this.pointer = new Vector2();
 
@@ -150,6 +159,7 @@ export class TrayScene {
     this.createEnvironment();
     this.createTray();
     this.scene.add(this.diceGroup);
+    this.scene.add(this.takenDiceGroup);
     this.setDiceValues([1, 5, 2, 6, 3, 4]);
     this.handleResize();
 
@@ -185,7 +195,7 @@ export class TrayScene {
     this.canvas.removeEventListener('pointermove', this.handlePointerMove);
     this.canvas.removeEventListener('pointerleave', this.handlePointerLeave);
     window.removeEventListener('resize', this.handleResize);
-    this.clearDice();
+    this.clearAllDice();
     this.renderer.dispose();
   }
 
@@ -205,12 +215,30 @@ export class TrayScene {
   }
 
   setDiceValues(values: number[]): void {
+    if (values.length === 0) {
+      this.clearActiveDice();
+      return;
+    }
+
     this.rebuildDice(values);
   }
 
   setSelectedIndices(indices: number[]): void {
     this.selectedIndices = new Set(indices);
     this.updateDieHighlights();
+  }
+
+  clearTakenDice(): void {
+    for (const die of this.takenDiceMeshes) {
+      this.takenDiceGroup.remove(die);
+      die.geometry.dispose();
+      die.material.forEach((material: MeshStandardMaterial) => {
+        material.map?.dispose();
+        material.dispose();
+      });
+    }
+
+    this.takenDiceMeshes = [];
   }
 
   playRollAnimation(finalValues: number[], startingCount = finalValues.length): Promise<void> {
@@ -227,34 +255,24 @@ export class TrayScene {
       this.setInteractive(false);
       this.rebuildDice(rolledValues);
 
+      const playBounds = this.getPlayBounds();
       const { positions: targetPositions, rotations: targetRotations } = this.prepareRestLayout(finalValues.length, true);
       const states = this.diceMeshes.map<RollAnimationState>((die, index) => {
-        const startPosition = new Vector3(
-          randomRange(-1.1, 1.1),
-          randomRange(3.3, 4.3),
-          randomRange(-TRAY_DEPTH * 0.48, -TRAY_DEPTH * 0.2),
-        );
+        const targetPosition = targetPositions[index] ?? new Vector3(0, DIE_REST_Y, 0);
+        const launch = this.createThrowLaunch(index, this.diceMeshes.length, targetPosition, playBounds);
+        const startPosition = launch.startPosition;
         const startRotation = new Euler(
           randomRange(0, Math.PI * 2),
           randomRange(0, Math.PI * 2),
           randomRange(0, Math.PI * 2),
         );
-        const targetPosition = targetPositions[index] ?? new Vector3(0, DIE_REST_Y, 0);
         const targetRotation = targetRotations[index] ?? new Vector3();
         const targetQuaternion = new Quaternion().setFromEuler(
           new Euler(targetRotation.x, targetRotation.y, targetRotation.z),
         );
         const quaternion = new Quaternion().setFromEuler(startRotation);
-        const velocity = new Vector3(
-          (targetPosition.x - startPosition.x) * randomRange(1.75, 2.45),
-          randomRange(4.1, 5.3),
-          (targetPosition.z - startPosition.z) * randomRange(1.55, 2.3) + randomRange(1.6, 2.5),
-        );
-        const angularVelocity = new Vector3(
-          randomSignedRange(10, 16),
-          randomSignedRange(8, 13),
-          randomSignedRange(10, 16),
-        );
+        const velocity = launch.velocity;
+        const angularVelocity = launch.angularVelocity;
 
         die.position.copy(startPosition);
         die.quaternion.copy(quaternion);
@@ -274,8 +292,6 @@ export class TrayScene {
           targetQuaternion,
         };
       });
-
-      const playBounds = this.getPlayBounds();
 
       await this.animate(ROLL_DURATION_MS, (progress, deltaMs) => {
         const dt = Math.min(Math.max(deltaMs, 16.67), 32) / 1000;
@@ -435,7 +451,7 @@ export class TrayScene {
     });
   }
 
-  playTakeSelectionAnimation(selectedIndices: number[]): Promise<void> {
+  playTakeSelectionAnimation(selectedIndices: number[], clearAfter = false): Promise<void> {
     return this.enqueueTransition(async () => {
       if (selectedIndices.length === 0 || this.diceMeshes.length === 0) {
         this.setDiceValues([]);
@@ -443,25 +459,29 @@ export class TrayScene {
       }
 
       const selected = new Set(selectedIndices);
+      const parkedOffset = this.takenDiceMeshes.length;
       const states = this.diceMeshes.map<TakeAnimationState>((die, index) => {
         const order = selectedIndices.indexOf(index);
         const isSelected = selected.has(index);
         const startPosition = die.position.clone();
         const targetPosition = isSelected
-          ? new Vector3(-4.55 + order * 0.74, 0.48 + order * 0.03, 4.15 + order * 0.08)
+          ? this.getTakenDieSlot(parkedOffset + order)
           : new Vector3(startPosition.x * 0.45, 0.34, startPosition.z + 1.55);
+        const targetRotation = isSelected
+          ? new Vector3(0, randomSignedRange(Math.PI * 0.04, Math.PI * 0.22), 0)
+          : new Vector3(
+              die.rotation.x + randomSpin() * 0.18,
+              die.rotation.y + randomSpin() * 0.12,
+              die.rotation.z + randomSpin() * 0.08,
+            );
 
         return {
           startPosition,
           targetPosition,
           startRotation: new Vector3(die.rotation.x, die.rotation.y, die.rotation.z),
-          spinRotation: new Vector3(
-            isSelected ? randomSpin() * 0.45 : randomSpin() * 0.18,
-            isSelected ? randomSpin() * 0.45 : randomSpin() * 0.12,
-            isSelected ? randomSpin() * 0.35 : randomSpin() * 0.08,
-          ),
+          targetRotation,
           startScale: die.scale.x,
-          targetScale: isSelected ? 0.62 : 0.82,
+          targetScale: isSelected ? TAKEN_DIE_SCALE : 0.82,
           selected: isSelected,
         };
       });
@@ -477,18 +497,22 @@ export class TrayScene {
 
           die.position.lerpVectors(state.startPosition, state.targetPosition, eased);
           die.rotation.set(
-            MathUtils.lerp(state.startRotation.x, state.startRotation.x + state.spinRotation.x, eased),
-            MathUtils.lerp(state.startRotation.y, state.startRotation.y + state.spinRotation.y, eased),
-            MathUtils.lerp(state.startRotation.z, state.startRotation.z + state.spinRotation.z, eased),
+            MathUtils.lerp(state.startRotation.x, state.targetRotation.x, eased),
+            MathUtils.lerp(state.startRotation.y, state.targetRotation.y, eased),
+            MathUtils.lerp(state.startRotation.z, state.targetRotation.z, eased),
           );
           die.scale.setScalar(MathUtils.lerp(state.startScale, state.targetScale, eased));
-          this.setDieOpacity(die, state.selected ? 1 - eased * 0.92 : 1 - eased);
+          this.setDieOpacity(die, state.selected ? 1 - eased * 0.18 : 1 - eased);
         });
         this.updateDynamicOverlays(performance.now());
       });
 
+      this.storeTakenDice(selectedIndices, parkedOffset);
+      if (clearAfter || this.takenDiceMeshes.length >= 6) {
+        this.clearTakenDice();
+      }
       this.selectedIndices.clear();
-      this.setDiceValues([]);
+      this.clearActiveDice();
     });
   }
 
@@ -545,7 +569,7 @@ export class TrayScene {
   }
 
   private rebuildDice(values: number[]): void {
-    this.clearDice();
+    this.clearActiveDice();
     this.hoveredIndex = null;
     const { positions, rotations } = this.prepareRestLayout(values.length);
 
@@ -632,7 +656,7 @@ export class TrayScene {
     this.refreshCursor();
   };
 
-  private clearDice(): void {
+  private clearActiveDice(): void {
     this.hoveredIndex = null;
     for (const die of this.diceMeshes) {
       const selectionRing = die.userData.selectionRing as SelectionRingMesh | undefined;
@@ -658,6 +682,11 @@ export class TrayScene {
     }
 
     this.diceMeshes = [];
+  }
+
+  private clearAllDice(): void {
+    this.clearActiveDice();
+    this.clearTakenDice();
   }
 
   private resolveDieCollisions(states: RollAnimationState[], playBounds: PlayBounds): void {
@@ -792,14 +821,14 @@ export class TrayScene {
     const positions: Vector3[] = [];
     const rotations: Vector3[] = [];
     const playBounds = this.getPlayBounds();
-    const baseSpreadX = TRAY_WIDTH * 0.1 + Math.min(count, 6) * 0.06;
-    const baseSpreadZ = TRAY_DEPTH * 0.075 + Math.min(count, 6) * 0.05;
-    let minimumSpacing = count >= 5 ? 1.36 : 1.28;
+    const baseSpreadX = TRAY_WIDTH * 0.18 + Math.min(count, 6) * 0.08;
+    const baseSpreadZ = TRAY_DEPTH * 0.15 + Math.min(count, 6) * 0.07;
+    let minimumSpacing = count >= 5 ? 1.56 : 1.46;
 
     for (let round = 0; round < 3 && positions.length < count; round += 1) {
       let attempts = 0;
-      const spreadX = baseSpreadX * (1 + round * 0.16);
-      const spreadZ = baseSpreadZ * (1 + round * 0.16);
+      const spreadX = baseSpreadX * (1 + round * 0.12);
+      const spreadZ = baseSpreadZ * (1 + round * 0.12);
 
       while (positions.length < count && attempts < 520) {
         attempts += 1;
@@ -822,10 +851,10 @@ export class TrayScene {
       const fallbackPositions = this.layoutDicePositions(count).map(
         (position) =>
           new Vector3(
-            MathUtils.clamp(position.x * 0.58 + randomSignedRange(0.04, 0.12), playBounds.minX, playBounds.maxX),
+            MathUtils.clamp(position.x * 0.96 + randomSignedRange(0.08, 0.22), playBounds.minX, playBounds.maxX),
             DIE_REST_Y,
             MathUtils.clamp(
-              REST_LAYOUT_CENTER_Z + position.z * 0.54 + randomSignedRange(0.03, 0.1),
+              REST_LAYOUT_CENTER_Z + position.z * 0.72 + randomSignedRange(0.05, 0.15),
               playBounds.minZ,
               playBounds.maxZ,
             ),
@@ -1069,6 +1098,66 @@ export class TrayScene {
 
   private refreshCursor(): void {
     this.canvas.style.cursor = this.interactive && this.hoveredIndex !== null ? 'pointer' : 'default';
+  }
+
+  private createThrowLaunch(index: number, count: number, targetPosition: Vector3, playBounds: PlayBounds) {
+    const laneIndex = index - (count - 1) * 0.5;
+    const startPosition = new Vector3(
+      MathUtils.clamp(
+        targetPosition.x + laneIndex * THROW_LANE_SPREAD_X + randomSignedRange(0.08, THROW_SIDE_JITTER),
+        playBounds.minX + DIE_SIZE * 0.28,
+        playBounds.maxX - DIE_SIZE * 0.28,
+      ),
+      randomRange(THROW_START_HEIGHT_MIN, THROW_START_HEIGHT_MAX),
+      playBounds.maxZ - randomRange(0.08, THROW_BOTTOM_ENTRY_OFFSET),
+    );
+    const velocity = new Vector3(
+      (targetPosition.x - startPosition.x) * randomRange(1.62, 1.98),
+      randomRange(4.2, 5.05),
+      (targetPosition.z - startPosition.z) * randomRange(1.9, 2.35) + randomSignedRange(0.05, 0.16),
+    );
+    const angularVelocity = new Vector3(
+      randomSignedRange(10, 16),
+      randomSignedRange(8, 14),
+      randomSignedRange(10, 16),
+    );
+
+    return {
+      startPosition,
+      velocity,
+      angularVelocity,
+    };
+  }
+
+  private getTakenDieSlot(order: number): Vector3 {
+    const playBounds = this.getPlayBounds();
+    const rowsPerColumn = 3;
+    const rowSpacing = DIE_SIZE * 1.18;
+    const columnSpacing = DIE_SIZE * 1.08;
+    const row = order % rowsPerColumn;
+    const column = Math.floor(order / rowsPerColumn);
+    const x = playBounds.maxX - DIE_SIZE * 0.72 - column * columnSpacing;
+    const z = -rowSpacing + row * rowSpacing;
+    return new Vector3(x, DIE_REST_Y, z);
+  }
+
+  private storeTakenDice(selectedIndices: number[], parkedOffset: number): void {
+    selectedIndices.forEach((selectedIndex, order) => {
+      const sourceDie = this.diceMeshes[selectedIndex];
+
+      if (!sourceDie) {
+        return;
+      }
+
+      const parkedDie = this.createDie((sourceDie.userData.topValue as number) ?? 1);
+      const parkedPosition = this.getTakenDieSlot(parkedOffset + order);
+      parkedDie.position.copy(parkedPosition);
+      parkedDie.rotation.set(0, randomSignedRange(Math.PI * 0.04, Math.PI * 0.22), 0);
+      parkedDie.scale.setScalar(TAKEN_DIE_SCALE);
+      parkedDie.userData.topValue = sourceDie.userData.topValue;
+      this.takenDiceGroup.add(parkedDie);
+      this.takenDiceMeshes.push(parkedDie);
+    });
   }
 
   private updateCameraFrame(): void {

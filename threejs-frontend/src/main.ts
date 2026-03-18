@@ -37,6 +37,7 @@ root.innerHTML = `
     </div>
 
     <div id="phase-banner" class="phase-banner" aria-live="polite"></div>
+    <div id="center-notice" class="center-notice" aria-live="assertive"></div>
 
     <div class="scene-shell">
       <canvas class="scene-canvas" aria-label="3D dice tray"></canvas>

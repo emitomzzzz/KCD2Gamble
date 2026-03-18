@@ -28,6 +28,7 @@ interface ElementMap {
   selectedScoreA: HTMLElement;
   selectedScoreB: HTMLElement;
   phaseBanner: HTMLElement;
+  centerNotice: HTMLElement;
 }
 
 interface ActionOptions {
@@ -100,6 +101,7 @@ export class GameApp {
       selectedScoreA: query<HTMLElement>('#selected-score-a'),
       selectedScoreB: query<HTMLElement>('#selected-score-b'),
       phaseBanner: query<HTMLElement>('#phase-banner'),
+      centerNotice: query<HTMLElement>('#center-notice'),
     };
   }
 
@@ -171,7 +173,7 @@ export class GameApp {
         const selectedIndices = [...this.selectedIndices];
         const takeResponse = await takeSelection(selectedIndices);
         this.markConnection(true);
-        await this.scene.playTakeSelectionAnimation(selectedIndices);
+        await this.scene.playTakeSelectionAnimation(selectedIndices, takeResponse.take_result?.hot_dice ?? false);
         const continueResponse = await continuePlaying();
         this.markConnection(true);
         await this.scene.playRollAnimation(
@@ -211,9 +213,9 @@ export class GameApp {
 
       await this.runBusyTask('正在保存本回合分数...', async () => {
         const selectedIndices = [...this.selectedIndices];
-        await takeSelection(selectedIndices);
+        const takeResponse = await takeSelection(selectedIndices);
         this.markConnection(true);
-        await this.scene.playTakeSelectionAnimation(selectedIndices);
+        await this.scene.playTakeSelectionAnimation(selectedIndices, takeResponse.take_result?.hot_dice ?? false);
         const bankResponse = await bankCurrentTurn();
         this.markConnection(true);
         this.applyResponse(bankResponse, true);
@@ -338,6 +340,14 @@ export class GameApp {
       this.preview = response.preview ?? this.preview;
     }
 
+    if (
+      response.message === 'Started a new game.' ||
+      this.snapshot.phase === 'game_over' ||
+      (previousSnapshot !== null && previousSnapshot.current_player !== this.snapshot.current_player)
+    ) {
+      this.scene.clearTakenDice();
+    }
+
     this.syncScene();
     this.handleTransitions(previousSnapshot, this.snapshot, response.message);
     this.render();
@@ -406,9 +416,8 @@ export class GameApp {
       return response;
     }
 
-    this.showBanner('爆骰，本回合结束', 'warn');
-    this.render();
-    await this.delay(520);
+    this.hideBanner();
+    await this.showCenterNotice('\u672c\u8f6e\u4f5c\u5e9f\uff01', 1000, 520);
     const resolved = await resolveFarkleTurn();
     this.markConnection(true);
     return resolved;
@@ -484,6 +493,22 @@ export class GameApp {
       banner.classList.remove('is-visible', 'banner-info', 'banner-warn', 'banner-success', 'is-persist');
       this.bannerTimeoutId = null;
     }, 2200);
+  }
+
+  private hideBanner(): void {
+    const banner = this.elements.phaseBanner;
+    this.clearBannerTimer();
+    banner.classList.remove('is-visible', 'banner-info', 'banner-warn', 'banner-success', 'is-persist');
+  }
+
+  private async showCenterNotice(message: string, holdMs: number, fadeMs: number): Promise<void> {
+    const notice = this.elements.centerNotice;
+    notice.textContent = message;
+    notice.classList.add('is-visible');
+    await this.delay(holdMs);
+    notice.classList.remove('is-visible');
+    await this.delay(fadeMs);
+    notice.textContent = '';
   }
 
   private clearBannerTimer(): void {
