@@ -59,6 +59,19 @@ input {
   position: relative;
   width: 100%;
   height: 100%;
+  --hud-gap: clamp(0.75rem, 1.2vmin, 1.25rem);
+  --hud-radius: clamp(14px, 1.35vmin, 18px);
+  --hud-blur: clamp(8px, 1vmin, 10px);
+  --hud-pad-y: clamp(0.72rem, 1.1vmin, 1rem);
+  --hud-pad-x: clamp(0.82rem, 1.25vmin, 1.1rem);
+  --hud-copy-size: clamp(0.78rem, 0.9vmin, 0.92rem);
+  --hud-title-size: clamp(0.98rem, 1.1vmin, 1.08rem);
+  --hud-eyebrow-size: clamp(0.68rem, 0.78vmin, 0.78rem);
+  --hud-total-size: clamp(1.55rem, 2.35vmin, 2.2rem);
+  --hud-side-size: clamp(1.12rem, 1.72vmin, 1.55rem);
+  --hud-panel-width-top: clamp(18rem, 23vw, 28rem);
+  --hud-panel-width-status: clamp(20rem, 26vw, 30rem);
+  --hud-panel-width-action: clamp(12rem, 16vw, 18rem);
   background:
     radial-gradient(circle at top, rgba(255, 251, 241, 0.7), transparent 28%),
     linear-gradient(180deg, #ddd4c7 0%, #d4c8b8 100%);
@@ -144,46 +157,46 @@ input {
 .hud {
   position: absolute;
   z-index: 1;
-  border-radius: 16px;
+  border-radius: var(--hud-radius);
   background: rgba(248, 243, 234, 0.78);
   border: 1px solid rgba(118, 99, 72, 0.16);
   box-shadow: 0 12px 32px rgba(56, 42, 20, 0.12);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--hud-blur));
 }
 
 .hud-top-left {
-  top: 1.25rem;
-  left: 1.25rem;
+  top: var(--hud-gap);
+  left: var(--hud-gap);
 }
 
 .hud-bottom-left {
-  left: 1.25rem;
-  bottom: 1.25rem;
+  left: var(--hud-gap);
+  bottom: var(--hud-gap);
 }
 
 .hud-bottom-right {
-  right: 1.25rem;
-  bottom: 1.25rem;
+  right: var(--hud-gap);
+  bottom: var(--hud-gap);
 }
 
 .top-panel {
-  width: 28rem;
-  padding: 1rem 1.1rem;
+  width: min(var(--hud-panel-width-top), calc(100vw - (var(--hud-gap) * 2)));
+  padding: var(--hud-pad-y) var(--hud-pad-x);
 }
 
 .status-panel {
-  width: 28rem;
-  padding: 1rem 1.1rem;
+  width: min(var(--hud-panel-width-status), calc(100vw - (var(--hud-gap) * 2)));
+  padding: var(--hud-pad-y) var(--hud-pad-x);
 }
 
 .action-panel {
-  width: 18rem;
-  padding: 0.95rem 1rem;
+  width: min(var(--hud-panel-width-action), calc(100vw - (var(--hud-gap) * 2)));
+  padding: calc(var(--hud-pad-y) * 0.95) calc(var(--hud-pad-x) * 0.95);
 }
 
 .hud-eyebrow {
   margin-bottom: 0.35rem;
-  font-size: 0.78rem;
+  font-size: var(--hud-eyebrow-size);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -193,7 +206,7 @@ input {
 .hud h1,
 .hud-title {
   margin: 0 0 0.45rem;
-  font-size: 1.08rem;
+  font-size: var(--hud-title-size);
   font-weight: 700;
   color: #2a2218;
 }
@@ -205,7 +218,7 @@ input {
 .score-label,
 .badge,
 .field span {
-  font-size: 0.92rem;
+  font-size: var(--hud-copy-size);
   line-height: 1.45;
 }
 
@@ -223,7 +236,7 @@ input {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: clamp(0.25rem, 0.45vmin, 0.35rem);
 }
 
 .field span,
@@ -236,8 +249,8 @@ input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
-  margin-top: 0.9rem;
+  gap: clamp(0.5rem, 0.85vmin, 0.75rem);
+  margin-top: clamp(0.7rem, 1vmin, 0.9rem);
 }
 
 .primary-button {
@@ -270,14 +283,14 @@ input {
 .score-matrix {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.85rem 1rem;
+  gap: clamp(0.65rem, 1vmin, 0.85rem) clamp(0.7rem, 1.1vmin, 1rem);
   align-items: center;
 }
 
 .matrix-header {
-  padding: 0.34rem 0.5rem;
+  padding: clamp(0.26rem, 0.45vmin, 0.34rem) clamp(0.4rem, 0.7vmin, 0.5rem);
   border-radius: 999px;
-  font-size: 1rem;
+  font-size: clamp(0.92rem, 1.15vmin, 1rem);
   font-weight: 700;
   color: #6d5a42;
   text-align: center;
@@ -285,7 +298,7 @@ input {
 }
 
 .matrix-total {
-  font-size: 2.2rem;
+  font-size: var(--hud-total-size);
   font-weight: 800;
   line-height: 1;
   color: #21180f;
@@ -298,19 +311,19 @@ input {
 }
 
 .matrix-middle-tag {
-  font-size: 1rem;
+  font-size: clamp(0.9rem, 1.05vmin, 1rem);
   font-weight: 700;
   color: #6d5a42;
   text-align: center;
 }
 
 .matrix-side-value {
-  padding: 0.72rem 0.5rem;
+  padding: clamp(0.56rem, 0.95vmin, 0.72rem) clamp(0.42rem, 0.7vmin, 0.5rem);
   border-radius: 14px;
   background: rgba(255, 250, 242, 0.48);
   border: 1px solid rgba(118, 99, 72, 0.12);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
-  font-size: 1.55rem;
+  font-size: var(--hud-side-size);
   font-weight: 800;
   line-height: 1;
   color: #241a10;
@@ -352,20 +365,29 @@ input {
 .button-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 0.65rem;
+  gap: clamp(0.5rem, 0.85vmin, 0.65rem);
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 1120px), (max-height: 880px) {
+  .layout {
+    --hud-panel-width-top: clamp(16.5rem, 24vw, 24rem);
+    --hud-panel-width-status: clamp(18rem, 25vw, 24rem);
+    --hud-panel-width-action: clamp(11rem, 15vw, 16rem);
+    --hud-copy-size: clamp(0.75rem, 0.84vmin, 0.88rem);
+    --hud-total-size: clamp(1.35rem, 2.05vmin, 1.95rem);
+    --hud-side-size: clamp(1rem, 1.5vmin, 1.35rem);
+  }
+
   .top-panel {
-    width: 24rem;
+    width: min(var(--hud-panel-width-top), calc(100vw - (var(--hud-gap) * 2)));
   }
 
   .status-panel {
-    width: 21rem;
+    width: min(var(--hud-panel-width-status), calc(100vw - (var(--hud-gap) * 2)));
   }
 
   .action-panel {
-    width: 17rem;
+    width: min(var(--hud-panel-width-action), calc(100vw - (var(--hud-gap) * 2)));
   }
 }
 
