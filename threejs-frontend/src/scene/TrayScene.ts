@@ -14,7 +14,6 @@ import {
   MeshStandardMaterial,
   PCFSoftShadowMap,
   PerspectiveCamera,
-  PlaneGeometry,
   Quaternion,
   Raycaster,
   RingGeometry,
@@ -60,6 +59,11 @@ const CAMERA_FORWARD_OFFSET = 0.08;
 const CAMERA_FRAME_MARGIN = 0.94;
 const CAMERA_MIN_DISTANCE = 12;
 const CAMERA_MAX_DISTANCE = 64;
+const CAMERA_TRANSITION_MS = 620;
+const SETUP_CAMERA_FORWARD_OFFSET = 0.34;
+const SETUP_CAMERA_FRAME_MARGIN = 0.9;
+const SETUP_CAMERA_DISTANCE_SCALE = 1.2;
+const SETUP_CAMERA_TARGET_Y_OFFSET = 0.28;
 const THROW_BOTTOM_ENTRY_OFFSET = 0.34;
 const THROW_START_HEIGHT_MIN = 3.1;
 const THROW_START_HEIGHT_MAX = 4.1;
@@ -109,13 +113,37 @@ interface PlayBounds {
   maxZ: number;
 }
 
+interface CameraPose {
+  forwardOffset: number;
+  frameMargin: number;
+  distanceScale: number;
+  targetYOffset: number;
+  fixedPosition?: [number, number, number];
+  fixedTarget?: [number, number, number];
+}
+
 const ZERO_VECTOR = new Vector3(0, 0, 0);
+const PLAY_CAMERA_POSE: CameraPose = {
+  forwardOffset: CAMERA_FORWARD_OFFSET,
+  frameMargin: CAMERA_FRAME_MARGIN,
+  distanceScale: 1,
+  targetYOffset: 0,
+};
+const SETUP_CAMERA_POSE: CameraPose = {
+  forwardOffset: SETUP_CAMERA_FORWARD_OFFSET,
+  frameMargin: SETUP_CAMERA_FRAME_MARGIN,
+  distanceScale: SETUP_CAMERA_DISTANCE_SCALE,
+  targetYOffset: SETUP_CAMERA_TARGET_Y_OFFSET,
+  fixedPosition: [0, TRAY_WALL_HEIGHT + 8.2, TRAY_DEPTH * 1.74],
+  fixedTarget: [0, TRAY_WALL_HEIGHT + 3.05, -TRAY_DEPTH * 0.58],
+};
 
 export class TrayScene {
   private readonly canvas: HTMLCanvasElement;
   private readonly renderer: WebGLRenderer;
   private readonly scene: Scene;
   private readonly camera: PerspectiveCamera;
+  private readonly cameraLookTarget: Vector3;
   private readonly diceGroup: Group;
   private readonly takenDiceGroup: Group;
   private readonly raycaster: Raycaster;
@@ -131,6 +159,7 @@ export class TrayScene {
   private transitionActive = false;
   private disposed = false;
   private restLayout: RestLayout | null = null;
+  private currentCameraPose: CameraPose = SETUP_CAMERA_POSE;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -148,7 +177,8 @@ export class TrayScene {
     this.scene.background = new Color('#d8d0c3');
 
     this.camera = new PerspectiveCamera(CAMERA_FOV, 1, 0.1, 100);
-    this.updateCameraFrame();
+    this.cameraLookTarget = new Vector3();
+    this.applyCameraPose(this.currentCameraPose);
 
     this.diceGroup = new Group();
     this.takenDiceGroup = new Group();
@@ -212,6 +242,14 @@ export class TrayScene {
     }
 
     this.refreshCursor();
+  }
+
+  transitionToPlayView(): Promise<void> {
+    return this.transitionCameraTo(PLAY_CAMERA_POSE);
+  }
+
+  transitionToSetupView(): Promise<void> {
+    return this.transitionCameraTo(SETUP_CAMERA_POSE);
   }
 
   setDiceValues(values: number[]): void {
@@ -608,7 +646,7 @@ export class TrayScene {
 
     this.camera.aspect = width / height;
     this.renderer.setSize(width, height, false);
-    this.updateCameraFrame();
+    this.applyCameraPose(this.currentCameraPose);
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
@@ -949,18 +987,7 @@ export class TrayScene {
   }
 
   private createEnvironment(): void {
-    const table = new Mesh(
-      new PlaneGeometry(46, 38),
-      new MeshStandardMaterial({
-        color: '#d3c5af',
-        roughness: 0.94,
-        metalness: 0.02,
-      }),
-    );
-    table.rotation.x = -Math.PI / 2;
-    table.position.y = -0.01;
-    table.receiveShadow = true;
-    this.scene.add(table);
+    return;
   }
 
   private createTray(): void {
@@ -1160,9 +1187,55 @@ export class TrayScene {
     });
   }
 
-  private updateCameraFrame(): void {
-    const target = new Vector3(0, TRAY_FELT_CENTER_Y + TRAY_FELT_HEIGHT * 0.5, 0);
-    const direction = new Vector3(0, 1, CAMERA_FORWARD_OFFSET).normalize();
+  private transitionCameraTo(pose: CameraPose): Promise<void> {
+    return this.enqueueTransition(async () => {
+      if (sameCameraPose(this.currentCameraPose, pose)) {
+        this.applyCameraPose(pose);
+        return;
+      }
+
+      const startPosition = this.camera.position.clone();
+      const startTarget = this.cameraLookTarget.clone();
+      const { position: endPosition, target: endTarget } = this.resolveCameraPlacement(pose);
+
+      await this.animate(CAMERA_TRANSITION_MS, (progress) => {
+        const eased = easeInOutCubic(progress);
+        this.camera.position.lerpVectors(startPosition, endPosition, eased);
+        this.cameraLookTarget.lerpVectors(startTarget, endTarget, eased);
+        this.camera.lookAt(this.cameraLookTarget);
+        this.camera.updateProjectionMatrix();
+        this.camera.updateMatrixWorld();
+      });
+
+      this.currentCameraPose = pose;
+      this.camera.position.copy(endPosition);
+      this.cameraLookTarget.copy(endTarget);
+      this.camera.lookAt(this.cameraLookTarget);
+      this.camera.updateProjectionMatrix();
+      this.camera.updateMatrixWorld();
+    });
+  }
+
+  private applyCameraPose(pose: CameraPose): void {
+    const { position, target } = this.resolveCameraPlacement(pose);
+    this.currentCameraPose = pose;
+    this.camera.position.copy(position);
+    this.cameraLookTarget.copy(target);
+    this.camera.lookAt(target);
+    this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld();
+  }
+
+  private resolveCameraPlacement(pose: CameraPose): { position: Vector3; target: Vector3 } {
+    if (pose.fixedPosition && pose.fixedTarget) {
+      return {
+        position: new Vector3(...pose.fixedPosition),
+        target: new Vector3(...pose.fixedTarget),
+      };
+    }
+
+    const target = new Vector3(0, TRAY_FELT_CENTER_Y + TRAY_FELT_HEIGHT * 0.5 + pose.targetYOffset, 0);
+    const direction = new Vector3(0, 1, pose.forwardOffset).normalize();
     this.camera.fov = CAMERA_FOV;
 
     let minDistance = CAMERA_MIN_DISTANCE;
@@ -1175,17 +1248,17 @@ export class TrayScene {
       this.camera.updateProjectionMatrix();
       this.camera.updateMatrixWorld();
 
-      if (this.isTrayFullyVisible(CAMERA_FRAME_MARGIN)) {
+      if (this.isTrayFullyVisible(pose.frameMargin)) {
         maxDistance = candidateDistance;
       } else {
         minDistance = candidateDistance;
       }
     }
 
-    this.camera.position.copy(target).addScaledVector(direction, maxDistance);
-    this.camera.lookAt(target);
-    this.camera.updateProjectionMatrix();
-    this.camera.updateMatrixWorld();
+    return {
+      position: target.clone().addScaledVector(direction, maxDistance * pose.distanceScale),
+      target,
+    };
   }
 
   private isTrayFullyVisible(frameMargin: number): boolean {
@@ -1346,4 +1419,30 @@ function cloneRestLayout(layout: RestLayout): RestLayout {
     positions: layout.positions.map((position) => position.clone()),
     rotations: layout.rotations.map((rotation) => rotation.clone()),
   };
+}
+
+function sameCameraPose(left: CameraPose, right: CameraPose): boolean {
+  return (
+    left.forwardOffset === right.forwardOffset &&
+    left.frameMargin === right.frameMargin &&
+    left.distanceScale === right.distanceScale &&
+    left.targetYOffset === right.targetYOffset &&
+    sameTuple(left.fixedPosition, right.fixedPosition) &&
+    sameTuple(left.fixedTarget, right.fixedTarget)
+  );
+}
+
+function sameTuple(
+  left?: [number, number, number],
+  right?: [number, number, number],
+): boolean {
+  if (!left && !right) {
+    return true;
+  }
+
+  if (!left || !right) {
+    return false;
+  }
+
+  return left[0] === right[0] && left[1] === right[1] && left[2] === right[2];
 }

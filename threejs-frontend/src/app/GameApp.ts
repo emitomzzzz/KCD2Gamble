@@ -13,11 +13,15 @@ import type { GameActionResponse, GameSnapshot, PreviewPayload } from '../types/
 
 interface ElementMap {
   targetInput: HTMLInputElement;
-  seedInput: HTMLInputElement;
+  setupOverlay: HTMLElement;
+  setupForm: HTMLElement;
   newGameButton: HTMLButtonElement;
+  victoryNewGameButton: HTMLButtonElement;
+  statusPanel: HTMLElement;
+  actionPanel: HTMLElement;
   rollButton: HTMLButtonElement;
   bankButton: HTMLButtonElement;
-  connectionBadge: HTMLSpanElement;
+  connectionBadge: HTMLElement;
   headerA: HTMLElement;
   headerB: HTMLElement;
   scoreA: HTMLElement;
@@ -29,6 +33,13 @@ interface ElementMap {
   selectedScoreB: HTMLElement;
   phaseBanner: HTMLElement;
   centerNotice: HTMLElement;
+  victoryOverlay: HTMLElement;
+  confettiLayer: HTMLElement;
+  victoryTitle: HTMLElement;
+  victoryWinner: HTMLElement;
+  victoryScoreA: HTMLElement;
+  victoryScoreB: HTMLElement;
+  victoryTarget: HTMLElement;
 }
 
 interface ActionOptions {
@@ -37,6 +48,8 @@ interface ActionOptions {
   onSuccess?: (response: GameActionResponse) => Promise<void>;
 }
 
+const CONFETTI_COLORS = ['#f0c662', '#dd7d56', '#6aa9d7', '#7bb66f', '#c86bb1', '#f4e8bf'];
+
 export class GameApp {
   private readonly elements: ElementMap;
   private readonly scene: TrayScene;
@@ -44,8 +57,13 @@ export class GameApp {
   private preview: PreviewPayload | null = null;
   private selectedIndices: number[] = [];
   private busy = false;
+  private presentationBusy = false;
+  private hudVisible = false;
+  private setupVisible = true;
   private previewToken = 0;
   private bannerTimeoutId: number | null = null;
+  private confettiCleanupId: number | null = null;
+  private presentedVictoryKey: string | null = null;
 
   constructor(root: HTMLElement, scene: TrayScene) {
     this.scene = scene;
@@ -60,17 +78,21 @@ export class GameApp {
     try {
       const response = await getGame();
       this.markConnection(true);
-      this.applyResponse(response, true);
+      this.elements.targetInput.value = `${response.snapshot.target_score ?? 5000}`;
     } catch (error) {
       this.markConnection(false);
       this.showBanner(this.describeError(error), 'warn');
-      this.render();
     }
+
+    this.scene.setDiceValues([]);
+    this.scene.clearTakenDice();
+    this.render();
   }
 
   dispose(): void {
     this.scene.setDieClickHandler(null);
     this.clearBannerTimer();
+    this.clearConfettiTimer();
   }
 
   private collectElements(root: HTMLElement): ElementMap {
@@ -86,11 +108,15 @@ export class GameApp {
 
     return {
       targetInput: query<HTMLInputElement>('#target-score'),
-      seedInput: query<HTMLInputElement>('#seed-value'),
+      setupOverlay: query<HTMLElement>('#setup-overlay'),
+      setupForm: query<HTMLElement>('#setup-form'),
       newGameButton: query<HTMLButtonElement>('#new-game-button'),
+      victoryNewGameButton: query<HTMLButtonElement>('#victory-new-game-button'),
+      statusPanel: query<HTMLElement>('#status-panel'),
+      actionPanel: query<HTMLElement>('#action-panel'),
       rollButton: query<HTMLButtonElement>('#roll-button'),
       bankButton: query<HTMLButtonElement>('#bank-button'),
-      connectionBadge: query<HTMLSpanElement>('#connection-badge'),
+      connectionBadge: query<HTMLElement>('#connection-badge'),
       headerA: query<HTMLElement>('#header-a'),
       headerB: query<HTMLElement>('#header-b'),
       scoreA: query<HTMLElement>('#score-a'),
@@ -102,12 +128,26 @@ export class GameApp {
       selectedScoreB: query<HTMLElement>('#selected-score-b'),
       phaseBanner: query<HTMLElement>('#phase-banner'),
       centerNotice: query<HTMLElement>('#center-notice'),
+      victoryOverlay: query<HTMLElement>('#victory-overlay'),
+      confettiLayer: query<HTMLElement>('#confetti-layer'),
+      victoryTitle: query<HTMLElement>('#victory-title'),
+      victoryWinner: query<HTMLElement>('#victory-winner'),
+      victoryScoreA: query<HTMLElement>('#victory-score-a'),
+      victoryScoreB: query<HTMLElement>('#victory-score-b'),
+      victoryTarget: query<HTMLElement>('#victory-target'),
     };
   }
 
   private bindEvents(): void {
     this.elements.newGameButton.addEventListener('click', () => {
       void this.handleNewGame();
+    });
+    this.elements.victoryNewGameButton.addEventListener('click', () => {
+      this.hudVisible = false;
+      this.openSetupOverlay();
+      this.hideVictoryOverlay();
+      this.clearConfetti();
+      this.render();
     });
     this.elements.rollButton.addEventListener('click', () => {
       void this.handlePrimaryAction();
@@ -117,36 +157,54 @@ export class GameApp {
     });
   }
 
+  private get uiBusy(): boolean {
+    return this.busy || this.presentationBusy;
+  }
+
   private markConnection(connected: boolean): void {
     this.elements.connectionBadge.textContent = connected ? '后端已连接' : '后端未连接';
     this.elements.connectionBadge.classList.toggle('badge-online', connected);
     this.elements.connectionBadge.classList.toggle('badge-offline', !connected);
   }
 
+  private openSetupOverlay(): void {
+    this.setupVisible = true;
+    this.render();
+  }
+
+  private closeSetupOverlay(): void {
+    this.setupVisible = false;
+    this.render();
+  }
+
   private async handleNewGame(): Promise<void> {
+    if (this.uiBusy) {
+      return;
+    }
+
     const targetScore = Number.parseInt(this.elements.targetInput.value, 10);
-    const seedText = this.elements.seedInput.value.trim();
 
     if (!Number.isInteger(targetScore) || targetScore <= 0) {
       this.showBanner('目标分数必须是正整数', 'warn');
       return;
     }
 
-    if (seedText.length > 0 && !/^-?\d+$/.test(seedText)) {
-      this.showBanner('随机种子必须是整数', 'warn');
-      return;
-    }
-
-    const seed = seedText.length > 0 ? Number.parseInt(seedText, 10) : undefined;
-    await this.runAction(() => newGame({ target_score: targetScore, seed }), {
+    await this.runAction(() => newGame({ target_score: targetScore }), {
       pendingMessage: '正在开始新对局...',
+      onSuccess: async () => {
+        this.hideVictoryOverlay();
+        this.clearConfetti();
+        this.hudVisible = true;
+        this.closeSetupOverlay();
+        await this.scene.transitionToPlayView();
+      },
     });
   }
 
   private async handlePrimaryAction(): Promise<void> {
     const snapshot = this.snapshot;
 
-    if (!snapshot || this.busy) {
+    if (!snapshot || this.uiBusy || this.setupVisible) {
       return;
     }
 
@@ -200,7 +258,7 @@ export class GameApp {
   private async handleSaveAndEndTurn(): Promise<void> {
     const snapshot = this.snapshot;
 
-    if (!snapshot || this.busy) {
+    if (!snapshot || this.uiBusy || this.setupVisible) {
       return;
     }
 
@@ -231,7 +289,7 @@ export class GameApp {
   }
 
   private async toggleDie(index: number): Promise<void> {
-    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection' || this.busy) {
+    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection' || this.uiBusy || this.setupVisible) {
       return;
     }
 
@@ -276,12 +334,12 @@ export class GameApp {
   }
 
   private async runAction(action: () => Promise<GameActionResponse>, options: ActionOptions = {}): Promise<void> {
-    if (this.busy) {
+    if (this.uiBusy) {
       return;
     }
 
     this.busy = true;
-    let responseReceived = false;
+
     if (options.pendingMessage) {
       this.showBanner(options.pendingMessage, 'info');
     }
@@ -289,16 +347,13 @@ export class GameApp {
 
     try {
       const response = await action();
-      responseReceived = true;
       this.markConnection(true);
       if (options.onSuccess) {
         await options.onSuccess(response);
       }
       this.applyResponse(response, options.resetSelection ?? true);
     } catch (error) {
-      if (!responseReceived) {
-        this.markConnection(false);
-      }
+      this.markConnection(false);
       this.showBanner(this.describeError(error), 'warn');
       this.render();
     } finally {
@@ -308,7 +363,7 @@ export class GameApp {
   }
 
   private async runBusyTask(pendingMessage: string, task: () => Promise<void>): Promise<void> {
-    if (this.busy) {
+    if (this.uiBusy) {
       return;
     }
 
@@ -348,8 +403,12 @@ export class GameApp {
       this.scene.clearTakenDice();
     }
 
+    if (response.message === 'Started a new game.' || this.snapshot.phase !== 'game_over') {
+      this.presentedVictoryKey = null;
+    }
+
     this.syncScene();
-    this.handleTransitions(previousSnapshot, this.snapshot, response.message);
+    void this.handleTransitions(previousSnapshot, this.snapshot, response.message);
     this.render();
   }
 
@@ -357,19 +416,24 @@ export class GameApp {
     const diceValues = this.snapshot?.current_roll ?? [];
     this.scene.setDiceValues(diceValues);
     this.scene.setSelectedIndices(this.selectedIndices);
-    this.scene.setInteractive(this.snapshot?.phase === 'awaiting_selection' && !this.busy);
+    this.scene.setInteractive(
+      this.hudVisible && !this.setupVisible && this.snapshot?.phase === 'awaiting_selection' && !this.uiBusy,
+    );
   }
 
   private render(): void {
     const snapshot = this.snapshot;
     const currentPlayer = snapshot?.current_player ?? 'A';
+    const uiBusy = this.uiBusy;
     const roundScoreA = currentPlayer === 'A' ? snapshot?.turn_points ?? 0 : 0;
     const roundScoreB = currentPlayer === 'B' ? snapshot?.turn_points ?? 0 : 0;
     const selectedScoreA = currentPlayer === 'A' && this.preview?.is_valid ? this.preview.points : 0;
     const selectedScoreB = currentPlayer === 'B' && this.preview?.is_valid ? this.preview.points : 0;
     const canCommitSelection = snapshot?.phase === 'awaiting_selection' && this.hasValidPreview();
     const canPrimaryAct =
-      !this.busy &&
+      !uiBusy &&
+      this.hudVisible &&
+      !this.setupVisible &&
       !!snapshot &&
       (snapshot.phase === 'ready_to_roll'
         ? snapshot.available_actions.roll
@@ -379,7 +443,9 @@ export class GameApp {
             ? snapshot.available_actions.continue_turn
             : false);
     const canBankAct =
-      !this.busy &&
+      !uiBusy &&
+      this.hudVisible &&
+      !this.setupVisible &&
       !!snapshot &&
       (snapshot.phase === 'awaiting_selection'
         ? canCommitSelection
@@ -401,10 +467,19 @@ export class GameApp {
     this.elements.selectedScoreA.classList.toggle('is-active', currentPlayer === 'A');
     this.elements.selectedScoreB.classList.toggle('is-active', currentPlayer === 'B');
     this.elements.rollButton.textContent = snapshot?.phase === 'ready_to_roll' || !snapshot ? '掷骰' : '继续掷骰';
-    this.elements.newGameButton.disabled = this.busy;
+    this.elements.newGameButton.disabled = uiBusy;
+    this.elements.victoryNewGameButton.disabled = uiBusy;
     this.elements.rollButton.disabled = !canPrimaryAct;
     this.elements.bankButton.disabled = !canBankAct;
-    this.scene.setInteractive(snapshot?.phase === 'awaiting_selection' && !this.busy);
+    this.elements.statusPanel.classList.toggle('is-hidden', !this.hudVisible);
+    this.elements.actionPanel.classList.toggle('is-hidden', !this.hudVisible);
+    this.elements.setupOverlay.classList.toggle('is-visible', this.setupVisible);
+    this.elements.setupOverlay.setAttribute('aria-hidden', String(!this.setupVisible));
+    this.elements.setupForm.classList.toggle('is-visible', this.setupVisible);
+    this.elements.setupForm.setAttribute('aria-hidden', String(!this.setupVisible));
+    this.scene.setInteractive(
+      this.hudVisible && !this.setupVisible && snapshot?.phase === 'awaiting_selection' && !uiBusy,
+    );
   }
 
   private hasValidPreview(): boolean {
@@ -417,7 +492,7 @@ export class GameApp {
     }
 
     this.hideBanner();
-    await this.showCenterNotice('\u672c\u8f6e\u4f5c\u5e9f\uff01', 1000, 520);
+    await this.showCenterNotice('本轮作废！', 1000, 520);
     const resolved = await resolveFarkleTurn();
     this.markConnection(true);
     return resolved;
@@ -429,13 +504,13 @@ export class GameApp {
     });
   }
 
-  private handleTransitions(
+  private async handleTransitions(
     previousSnapshot: GameSnapshot | null,
     nextSnapshot: GameSnapshot,
     responseMessage: string,
-  ): void {
+  ): Promise<void> {
     if (nextSnapshot.phase === 'game_over') {
-      this.showBanner(nextSnapshot.winner ? `${nextSnapshot.winner} 获胜` : '对局结束', 'success', true);
+      await this.presentVictory(nextSnapshot);
       return;
     }
 
@@ -445,7 +520,6 @@ export class GameApp {
     }
 
     if (!previousSnapshot) {
-      this.showBanner('已加载当前对局', 'info');
       return;
     }
 
@@ -474,6 +548,93 @@ export class GameApp {
         this.showBanner(`等待玩家 ${nextSnapshot.current_player} 掷骰`, 'info');
       }
     }
+  }
+
+  private async presentVictory(snapshot: GameSnapshot): Promise<void> {
+    const victoryKey = this.buildVictoryKey(snapshot);
+
+    if (this.presentedVictoryKey === victoryKey) {
+      return;
+    }
+
+    this.presentedVictoryKey = victoryKey;
+    this.presentationBusy = true;
+    this.hideBanner();
+    this.populateVictory(snapshot);
+    this.showVictoryOverlay();
+    this.launchConfetti();
+    this.render();
+    await this.scene.transitionToSetupView();
+    this.presentationBusy = false;
+    this.render();
+  }
+
+  private populateVictory(snapshot: GameSnapshot): void {
+    const winnerLabel = snapshot.winner ? `玩家 ${snapshot.winner}` : '无人';
+    this.elements.victoryTitle.textContent = snapshot.winner ? `玩家 ${snapshot.winner} 获胜` : '对局结束';
+    this.elements.victoryWinner.textContent = winnerLabel;
+    this.elements.victoryScoreA.textContent = `${snapshot.scores.A ?? 0}`;
+    this.elements.victoryScoreB.textContent = `${snapshot.scores.B ?? 0}`;
+    this.elements.victoryTarget.textContent = `${snapshot.target_score}`;
+  }
+
+  private showVictoryOverlay(): void {
+    this.elements.victoryOverlay.classList.add('is-visible');
+    this.elements.victoryOverlay.setAttribute('aria-hidden', 'false');
+  }
+
+  private hideVictoryOverlay(): void {
+    this.elements.victoryOverlay.classList.remove('is-visible');
+    this.elements.victoryOverlay.setAttribute('aria-hidden', 'true');
+  }
+
+  private buildVictoryKey(snapshot: GameSnapshot): string {
+    return [
+      snapshot.winner ?? 'none',
+      snapshot.scores.A ?? 0,
+      snapshot.scores.B ?? 0,
+      snapshot.target_score,
+    ].join(':');
+  }
+
+  private launchConfetti(): void {
+    this.clearConfetti();
+    const layer = this.elements.confettiLayer;
+
+    for (let index = 0; index < 108; index += 1) {
+      const piece = document.createElement('span');
+      const size = randomRange(0.52, 1.18);
+      piece.className = 'confetti-piece';
+      piece.style.setProperty('--piece-width', `${size}rem`);
+      piece.style.setProperty('--piece-height', `${size * randomRange(0.2, 0.42)}rem`);
+      piece.style.setProperty('--piece-start-x', `${randomRange(4, 96)}vw`);
+      piece.style.setProperty('--piece-drift-x', `${randomSignedRange(8, 26)}vw`);
+      piece.style.setProperty('--piece-delay', `${randomRange(0, 220)}ms`);
+      piece.style.setProperty('--piece-duration', `${randomRange(2600, 4000)}ms`);
+      piece.style.setProperty('--piece-rotation', `${randomSignedRange(320, 1080)}deg`);
+      piece.style.setProperty('--piece-color', CONFETTI_COLORS[index % CONFETTI_COLORS.length]);
+      layer.appendChild(piece);
+    }
+
+    this.clearConfettiTimer();
+    this.confettiCleanupId = window.setTimeout(() => {
+      this.clearConfetti();
+      this.confettiCleanupId = null;
+    }, 4300);
+  }
+
+  private clearConfetti(): void {
+    this.clearConfettiTimer();
+    this.elements.confettiLayer.innerHTML = '';
+  }
+
+  private clearConfettiTimer(): void {
+    if (this.confettiCleanupId === null) {
+      return;
+    }
+
+    window.clearTimeout(this.confettiCleanupId);
+    this.confettiCleanupId = null;
   }
 
   private showBanner(message: string, tone: 'info' | 'warn' | 'success', persist = false): void {
@@ -527,4 +688,12 @@ export class GameApp {
 
     return '请求失败';
   }
+}
+
+function randomRange(min: number, max: number): number {
+  return min + Math.random() * (max - min);
+}
+
+function randomSignedRange(min: number, max: number): number {
+  return randomRange(min, max) * (Math.random() > 0.5 ? 1 : -1);
 }
