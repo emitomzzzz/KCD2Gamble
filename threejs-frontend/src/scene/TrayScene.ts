@@ -30,6 +30,12 @@ const TRAY_FELT_HEIGHT = 0.25;
 const TRAY_WALL_HEIGHT = 0.55;
 const TRAY_WALL_THICKNESS = 0.55;
 const TRAY_FELT_CENTER_Y = 0.12;
+const TAKEN_AREA_WIDTH = 3.3;
+const TAKEN_AREA_DEPTH = 6.4;
+const TAKEN_AREA_GAP = 0.68;
+const TAKEN_AREA_CENTER_X =
+  TRAY_WIDTH * 0.5 + TRAY_WALL_THICKNESS + TAKEN_AREA_GAP + TAKEN_AREA_WIDTH * 0.5;
+const TAKEN_AREA_CENTER_Z = 0;
 const DIE_SIZE = 0.76;
 const DIE_REST_Y = TRAY_FELT_CENTER_Y + TRAY_FELT_HEIGHT * 0.5 + DIE_SIZE * 0.5;
 const ROLL_DURATION_MS = 1320;
@@ -54,6 +60,10 @@ const SHADOW_MIN_OPACITY = 0.08;
 const SHADOW_MAX_OPACITY = 0.26;
 const SHADOW_BASE_SCALE = 0.94;
 const RING_PULSE_SPEED = 0.0064;
+const FOCUS_RING_OPACITY = 0.38;
+const SELECTED_RING_BASE_OPACITY = 0.82;
+const FOCUS_RING_COLOR = '#e6ddb2';
+const SELECTED_RING_COLOR = '#e0ad33';
 const CAMERA_FOV = 28;
 const CAMERA_FORWARD_OFFSET = 0.08;
 const CAMERA_FRAME_MARGIN = 0.94;
@@ -76,6 +86,7 @@ type DieFace = 'px' | 'nx' | 'py' | 'ny' | 'pz' | 'nz';
 type DieMesh = Mesh<BoxGeometry, MeshStandardMaterial[]>;
 type SelectionRingMesh = Mesh<RingGeometry, MeshBasicMaterial>;
 type ContactShadowMesh = Mesh<CircleGeometry, MeshBasicMaterial>;
+type NavigationDirection = 'up' | 'down' | 'left' | 'right';
 
 interface RollAnimationState {
   position: Vector3;
@@ -239,9 +250,46 @@ export class TrayScene {
     if (!interactive && this.hoveredIndex !== null) {
       this.hoveredIndex = null;
       this.updateDieHighlights();
+      return;
+    }
+
+    if (interactive && this.diceMeshes.length > 0 && this.hoveredIndex === null) {
+      this.hoveredIndex = this.getDefaultFocusIndex();
+      this.updateDieHighlights();
+      return;
     }
 
     this.refreshCursor();
+  }
+
+  moveFocus(direction: NavigationDirection): boolean {
+    if (!this.interactive || this.diceMeshes.length === 0) {
+      return false;
+    }
+
+    const currentIndex = this.hoveredIndex ?? this.getDefaultFocusIndex();
+
+    if (currentIndex === null) {
+      return false;
+    }
+
+    const nextIndex = this.findNextFocusIndex(currentIndex, direction);
+
+    if (nextIndex === null || nextIndex === this.hoveredIndex) {
+      return nextIndex !== null;
+    }
+
+    this.hoveredIndex = nextIndex;
+    this.updateDieHighlights();
+    return true;
+  }
+
+  getFocusedIndex(): number | null {
+    if (!this.interactive || this.diceMeshes.length === 0) {
+      return null;
+    }
+
+    return this.hoveredIndex ?? this.getDefaultFocusIndex();
   }
 
   transitionToPlayView(): Promise<void> {
@@ -268,6 +316,13 @@ export class TrayScene {
 
   clearTakenDice(): void {
     for (const die of this.takenDiceMeshes) {
+      const shadowMesh = die.userData.shadowMesh as ContactShadowMesh | undefined;
+      if (shadowMesh) {
+        this.takenDiceGroup.remove(shadowMesh);
+        shadowMesh.geometry.dispose();
+        shadowMesh.material.dispose();
+      }
+
       this.takenDiceGroup.remove(die);
       die.geometry.dispose();
       die.material.forEach((material: MeshStandardMaterial) => {
@@ -938,7 +993,8 @@ export class TrayScene {
 
     this.diceMeshes.forEach((die, index) => {
       const selected = this.selectedIndices.has(index);
-      const hovered = this.interactive && this.hoveredIndex === index && !selected;
+      const focused = this.interactive && this.hoveredIndex === index;
+      const hovered = focused && !selected;
       const basePosition = die.userData.basePosition as Vector3;
       const selectionRing = die.userData.selectionRing as SelectionRingMesh | undefined;
       const pulse = selected ? (Math.sin(pulseTime * RING_PULSE_SPEED + index * 0.55) + 1) * 0.5 : 0;
@@ -955,8 +1011,11 @@ export class TrayScene {
       });
 
       if (selectionRing) {
-        selectionRing.visible = selected;
-        selectionRing.material.opacity = 0.72 + pulse * 0.18;
+        selectionRing.visible = selected || focused;
+        selectionRing.material.color.set(selected ? SELECTED_RING_COLOR : FOCUS_RING_COLOR);
+        selectionRing.material.opacity = selected
+          ? SELECTED_RING_BASE_OPACITY + pulse * 0.14
+          : FOCUS_RING_OPACITY;
       }
     });
 
@@ -1053,9 +1112,9 @@ export class TrayScene {
     const ring = new Mesh(
       new RingGeometry(DIE_SIZE * 0.62, DIE_SIZE * 0.84, 48),
       new MeshBasicMaterial({
-        color: '#d7aa42',
+        color: FOCUS_RING_COLOR,
         transparent: true,
-        opacity: 0.92,
+        opacity: FOCUS_RING_OPACITY,
         depthWrite: false,
       }),
     );
@@ -1084,15 +1143,16 @@ export class TrayScene {
   private updateDynamicOverlays(timeMs: number): void {
     this.diceMeshes.forEach((die, index) => {
       const selected = this.selectedIndices.has(index);
-      const hovered = this.interactive && this.hoveredIndex === index && !selected;
+      const focused = this.interactive && this.hoveredIndex === index;
+      const hovered = focused && !selected;
       const pulse = selected ? (Math.sin(timeMs * RING_PULSE_SPEED + index * 0.55) + 1) * 0.5 : 0;
       const selectionRing = die.userData.selectionRing as SelectionRingMesh | undefined;
       const shadowMesh = die.userData.shadowMesh as ContactShadowMesh | undefined;
 
       if (selectionRing) {
-        selectionRing.visible = selected;
+        selectionRing.visible = selected || focused;
         selectionRing.position.set(die.position.x, SHADOW_Y + 0.002, die.position.z);
-        selectionRing.scale.setScalar(1 + pulse * 0.08);
+        selectionRing.scale.setScalar(selected ? 1.02 + pulse * 0.1 : 0.98);
       }
 
       if (shadowMesh) {
@@ -1121,6 +1181,104 @@ export class TrayScene {
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const intersections = this.raycaster.intersectObjects(this.diceMeshes, false);
     return intersections[0] ?? null;
+  }
+
+  private getDefaultFocusIndex(): number | null {
+    if (this.diceMeshes.length === 0) {
+      return null;
+    }
+
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    this.diceMeshes.forEach((_, index) => {
+      const point = this.getDieScreenPoint(index);
+
+      if (!point) {
+        return;
+      }
+
+      const distance = Math.hypot(point.x, point.y);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+
+    return bestIndex;
+  }
+
+  private findNextFocusIndex(currentIndex: number, direction: NavigationDirection): number | null {
+    const currentPoint = this.getDieScreenPoint(currentIndex);
+
+    if (!currentPoint) {
+      return this.getDefaultFocusIndex();
+    }
+
+    const directionVector = this.getNavigationDirectionVector(direction);
+    const perpendicularVector = new Vector2(-directionVector.y, directionVector.x);
+    let bestIndex: number | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    this.diceMeshes.forEach((_, index) => {
+      if (index === currentIndex) {
+        return;
+      }
+
+      const point = this.getDieScreenPoint(index);
+
+      if (!point) {
+        return;
+      }
+
+      const delta = point.clone().sub(currentPoint);
+      const primary = delta.dot(directionVector);
+
+      if (primary <= 0.015) {
+        return;
+      }
+
+      const distance = delta.length();
+      const secondary = Math.abs(delta.dot(perpendicularVector));
+      const score = primary / (0.12 + secondary + distance * 0.45);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    });
+
+    return bestIndex;
+  }
+
+  private getDieScreenPoint(index: number): Vector2 | null {
+    const die = this.diceMeshes[index];
+
+    if (!die) {
+      return null;
+    }
+
+    const basePosition = (die.userData.basePosition as Vector3 | undefined) ?? die.position;
+    const projected = basePosition.clone().project(this.camera);
+
+    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
+      return null;
+    }
+
+    return new Vector2(projected.x, projected.y);
+  }
+
+  private getNavigationDirectionVector(direction: NavigationDirection): Vector2 {
+    switch (direction) {
+      case 'up':
+        return new Vector2(0, 1);
+      case 'down':
+        return new Vector2(0, -1);
+      case 'left':
+        return new Vector2(-1, 0);
+      case 'right':
+        return new Vector2(1, 0);
+    }
   }
 
   private refreshCursor(): void {
@@ -1157,14 +1315,16 @@ export class TrayScene {
   }
 
   private getTakenDieSlot(order: number): Vector3 {
-    const playBounds = this.getPlayBounds();
     const rowsPerColumn = 3;
-    const rowSpacing = DIE_SIZE * 1.18;
-    const columnSpacing = DIE_SIZE * 1.08;
+    const rowSpacing = DIE_SIZE * 1.26;
+    const columnSpacing = DIE_SIZE * 1.18;
     const row = order % rowsPerColumn;
     const column = Math.floor(order / rowsPerColumn);
-    const x = playBounds.maxX - DIE_SIZE * 0.72 - column * columnSpacing;
-    const z = -rowSpacing + row * rowSpacing;
+    const columnsVisible = 2;
+    const columnOffset = (columnsVisible - 1) * 0.5;
+    const x =
+      TAKEN_AREA_CENTER_X - columnOffset * columnSpacing + (column % columnsVisible) * columnSpacing;
+    const z = TAKEN_AREA_CENTER_Z - rowSpacing + row * rowSpacing;
     return new Vector3(x, DIE_REST_Y, z);
   }
 
@@ -1177,11 +1337,22 @@ export class TrayScene {
       }
 
       const parkedDie = this.createDie((sourceDie.userData.topValue as number) ?? 1);
+      const shadowMesh = this.createContactShadow();
       const parkedPosition = this.getTakenDieSlot(parkedOffset + order);
       parkedDie.position.copy(parkedPosition);
       parkedDie.rotation.set(0, randomSignedRange(Math.PI * 0.04, Math.PI * 0.22), 0);
       parkedDie.scale.setScalar(TAKEN_DIE_SCALE);
       parkedDie.userData.topValue = sourceDie.userData.topValue;
+      parkedDie.userData.shadowMesh = shadowMesh;
+      parkedDie.material.forEach((material: MeshStandardMaterial) => {
+        material.emissive.set('#8a6b20');
+        material.emissiveIntensity = 0.08;
+      });
+      shadowMesh.material.color.set('#17200d');
+      shadowMesh.position.set(parkedPosition.x, SHADOW_Y, parkedPosition.z);
+      shadowMesh.scale.setScalar(SHADOW_BASE_SCALE * 1.1);
+      shadowMesh.material.opacity = SHADOW_MAX_OPACITY + 0.09;
+      this.takenDiceGroup.add(shadowMesh);
       this.takenDiceGroup.add(parkedDie);
       this.takenDiceMeshes.push(parkedDie);
     });
@@ -1270,6 +1441,10 @@ export class TrayScene {
       new Vector3(halfWidth, topY, -halfDepth),
       new Vector3(-halfWidth, topY, halfDepth),
       new Vector3(halfWidth, topY, halfDepth),
+      new Vector3(TAKEN_AREA_CENTER_X - TAKEN_AREA_WIDTH * 0.5, topY, TAKEN_AREA_CENTER_Z - TAKEN_AREA_DEPTH * 0.5),
+      new Vector3(TAKEN_AREA_CENTER_X + TAKEN_AREA_WIDTH * 0.5, topY, TAKEN_AREA_CENTER_Z - TAKEN_AREA_DEPTH * 0.5),
+      new Vector3(TAKEN_AREA_CENTER_X - TAKEN_AREA_WIDTH * 0.5, topY, TAKEN_AREA_CENTER_Z + TAKEN_AREA_DEPTH * 0.5),
+      new Vector3(TAKEN_AREA_CENTER_X + TAKEN_AREA_WIDTH * 0.5, topY, TAKEN_AREA_CENTER_Z + TAKEN_AREA_DEPTH * 0.5),
     ];
 
     return corners.every((corner) => {

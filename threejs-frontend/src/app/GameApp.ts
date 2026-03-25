@@ -90,6 +90,7 @@ export class GameApp {
   }
 
   dispose(): void {
+    window.removeEventListener('keydown', this.handleKeyDown);
     this.scene.setDieClickHandler(null);
     this.clearBannerTimer();
     this.clearConfettiTimer();
@@ -139,6 +140,7 @@ export class GameApp {
   }
 
   private bindEvents(): void {
+    window.addEventListener('keydown', this.handleKeyDown);
     this.elements.newGameButton.addEventListener('click', () => {
       void this.handleNewGame();
     });
@@ -156,6 +158,59 @@ export class GameApp {
       void this.handleSaveAndEndTurn();
     });
   }
+
+  private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      return;
+    }
+
+    if (this.uiBusy || this.setupVisible || !this.hudVisible || this.snapshot?.phase !== 'awaiting_selection') {
+      return;
+    }
+
+    const activeElement = document.activeElement;
+
+    if (
+      activeElement instanceof HTMLInputElement ||
+      activeElement instanceof HTMLTextAreaElement ||
+      activeElement instanceof HTMLSelectElement ||
+      activeElement instanceof HTMLButtonElement ||
+      activeElement?.hasAttribute('contenteditable')
+    ) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+
+    if (key === 'e') {
+      const focusedIndex = this.scene.getFocusedIndex();
+
+      if (focusedIndex !== null) {
+        event.preventDefault();
+        void this.toggleDie(focusedIndex);
+      }
+      return;
+    }
+
+    const direction =
+      key === 'w'
+        ? 'up'
+        : key === 'a'
+          ? 'left'
+          : key === 's'
+            ? 'down'
+            : key === 'd'
+              ? 'right'
+              : null;
+
+    if (!direction) {
+      return;
+    }
+
+    if (this.scene.moveFocus(direction)) {
+      event.preventDefault();
+    }
+  };
 
   private get uiBusy(): boolean {
     return this.busy || this.presentationBusy;
