@@ -604,6 +604,35 @@ input {
   gap: clamp(0.5rem, 0.85vmin, 0.65rem);
 }
 
+.action-hints {
+  margin-top: clamp(0.6rem, 0.9vmin, 0.8rem);
+  display: grid;
+  gap: clamp(0.28rem, 0.55vmin, 0.4rem);
+  font-size: clamp(0.74rem, 0.9vmin, 0.82rem);
+  color: #5d4e3b;
+}
+
+.action-hint-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.shortcut-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.35rem;
+  padding: 0.16rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(139, 94, 52, 0.12);
+  border: 1px solid rgba(139, 94, 52, 0.18);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #7b5633;
+}
+
 @media (max-width: 1120px), (max-height: 880px) {
   .layout {
     --hud-panel-width-top: clamp(16.5rem, 24vw, 24rem);

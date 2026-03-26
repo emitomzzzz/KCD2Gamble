@@ -164,7 +164,7 @@ export class GameApp {
       return;
     }
 
-    if (this.uiBusy || this.setupVisible || !this.hudVisible || this.snapshot?.phase !== 'awaiting_selection') {
+    if (this.uiBusy || this.setupVisible || !this.hudVisible || !this.snapshot) {
       return;
     }
 
@@ -181,6 +181,22 @@ export class GameApp {
     }
 
     const key = event.key.toLowerCase();
+
+    if (key === 'f') {
+      event.preventDefault();
+      void this.handlePrimaryAction();
+      return;
+    }
+
+    if (key === 'q') {
+      event.preventDefault();
+      void this.handleSaveAndEndTurn();
+      return;
+    }
+
+    if (this.snapshot.phase !== 'awaiting_selection') {
+      return;
+    }
 
     if (key === 'e') {
       const focusedIndex = this.scene.getFocusedIndex();

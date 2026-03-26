@@ -83,6 +83,11 @@ root.innerHTML = `
         <button id="roll-button" type="button">掷骰</button>
         <button id="bank-button" type="button">保存分数并结束回合</button>
       </div>
+      <div class="action-hints" aria-label="keyboard shortcuts">
+        <div class="action-hint-row"><span class="shortcut-key">F</span><span>掷骰 / 继续掷骰</span></div>
+        <div class="action-hint-row"><span class="shortcut-key">Q</span><span>计分并结束回合</span></div>
+        <div class="action-hint-row"><span class="shortcut-key">WASD / E</span><span>移动焦点 / 选中骰子</span></div>
+      </div>
     </div>
   </div>
 `;

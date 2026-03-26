@@ -60,10 +60,16 @@ const SHADOW_MIN_OPACITY = 0.08;
 const SHADOW_MAX_OPACITY = 0.26;
 const SHADOW_BASE_SCALE = 0.94;
 const RING_PULSE_SPEED = 0.0064;
-const FOCUS_RING_OPACITY = 0.38;
-const SELECTED_RING_BASE_OPACITY = 0.82;
-const FOCUS_RING_COLOR = '#e6ddb2';
-const SELECTED_RING_COLOR = '#e0ad33';
+const FOCUS_RING_OPACITY = 0.82;
+const SELECTED_RING_BASE_OPACITY = 0.96;
+const FOCUS_RING_COLOR = '#d7aa42';
+const SELECTED_RING_COLOR = '#c73b32';
+const RING_INNER_RADIUS = DIE_SIZE * 0.76;
+const RING_OUTER_RADIUS = DIE_SIZE * 1.06;
+const NAVIGATION_PRIMARY_THRESHOLD = DIE_SIZE * 0.18;
+const NAVIGATION_NARROW_CORRIDOR = DIE_SIZE * 1.35;
+const NAVIGATION_WIDE_CORRIDOR = DIE_SIZE * 2.7;
+const NAVIGATION_COMPARISON_EPSILON = 1e-4;
 const CAMERA_FOV = 28;
 const CAMERA_FORWARD_OFFSET = 0.08;
 const CAMERA_FRAME_MARGIN = 0.94;
@@ -84,7 +90,8 @@ const TAKEN_DIE_SCALE = 0.92;
 type DieFace = 'px' | 'nx' | 'py' | 'ny' | 'pz' | 'nz';
 
 type DieMesh = Mesh<BoxGeometry, MeshStandardMaterial[]>;
-type SelectionRingMesh = Mesh<RingGeometry, MeshBasicMaterial>;
+type FocusRingMesh = Mesh<RingGeometry, MeshBasicMaterial>;
+type SelectedRingMesh = Mesh<RingGeometry, MeshBasicMaterial>;
 type ContactShadowMesh = Mesh<CircleGeometry, MeshBasicMaterial>;
 type NavigationDirection = 'up' | 'down' | 'left' | 'right';
 
@@ -122,6 +129,14 @@ interface PlayBounds {
   maxX: number;
   minZ: number;
   maxZ: number;
+}
+
+interface NavigationCandidate {
+  index: number;
+  primaryDistance: number;
+  lateralDistance: number;
+  euclideanDistance: number;
+  corridorBand: number;
 }
 
 interface CameraPose {
@@ -215,9 +230,9 @@ export class TrayScene {
       return;
     }
 
-    const loop = (timestamp: number) => {
+    const loop = () => {
       this.animationFrameId = window.requestAnimationFrame(loop);
-      this.updateDynamicOverlays(timestamp);
+      this.updateDynamicOverlays();
       this.renderer.render(this.scene, this.camera);
     };
 
@@ -504,7 +519,7 @@ export class TrayScene {
           die.position.copy(state.position);
           die.quaternion.copy(state.quaternion);
         });
-        this.updateDynamicOverlays(performance.now());
+        this.updateDynamicOverlays();
       });
 
       const finalPositions: Vector3[] = [];
@@ -597,7 +612,7 @@ export class TrayScene {
           die.scale.setScalar(MathUtils.lerp(state.startScale, state.targetScale, eased));
           this.setDieOpacity(die, state.selected ? 1 - eased * 0.18 : 1 - eased);
         });
-        this.updateDynamicOverlays(performance.now());
+        this.updateDynamicOverlays();
       });
 
       this.storeTakenDice(selectedIndices, parkedOffset);
@@ -620,7 +635,7 @@ export class TrayScene {
         await task();
       } finally {
         this.transitionActive = false;
-        this.updateDynamicOverlays(performance.now());
+        this.updateDynamicOverlays();
       }
     };
 
@@ -668,7 +683,8 @@ export class TrayScene {
 
     values.forEach((value, index) => {
       const die = this.createDie(value);
-      const selectionRing = this.createSelectionRing();
+      const focusRing = this.createFocusRing();
+      const selectedRing = this.createSelectedRing();
       const shadowMesh = this.createContactShadow();
       const basePosition = positions[index] ?? new Vector3(0, DIE_REST_Y, 0);
       const baseRotation = rotations[index] ?? new Vector3();
@@ -678,12 +694,14 @@ export class TrayScene {
       die.userData.index = index;
       die.userData.basePosition = basePosition.clone();
       die.userData.baseRotation = baseRotation.clone();
-      die.userData.selectionRing = selectionRing;
+      die.userData.focusRing = focusRing;
+      die.userData.selectedRing = selectedRing;
       die.userData.shadowMesh = shadowMesh;
       die.userData.topValue = value;
       this.setDieOpacity(die, 1);
       this.diceGroup.add(shadowMesh);
-      this.diceGroup.add(selectionRing);
+      this.diceGroup.add(focusRing);
+      this.diceGroup.add(selectedRing);
       this.diceGroup.add(die);
       this.diceMeshes.push(die);
     });
@@ -752,11 +770,18 @@ export class TrayScene {
   private clearActiveDice(): void {
     this.hoveredIndex = null;
     for (const die of this.diceMeshes) {
-      const selectionRing = die.userData.selectionRing as SelectionRingMesh | undefined;
-      if (selectionRing) {
-        this.diceGroup.remove(selectionRing);
-        selectionRing.geometry.dispose();
-        selectionRing.material.dispose();
+      const focusRing = die.userData.focusRing as FocusRingMesh | undefined;
+      if (focusRing) {
+        this.diceGroup.remove(focusRing);
+        focusRing.geometry.dispose();
+        focusRing.material.dispose();
+      }
+
+      const selectedRing = die.userData.selectedRing as SelectedRingMesh | undefined;
+      if (selectedRing) {
+        this.diceGroup.remove(selectedRing);
+        selectedRing.geometry.dispose();
+        selectedRing.material.dispose();
       }
 
       const shadowMesh = die.userData.shadowMesh as ContactShadowMesh | undefined;
@@ -996,7 +1021,8 @@ export class TrayScene {
       const focused = this.interactive && this.hoveredIndex === index;
       const hovered = focused && !selected;
       const basePosition = die.userData.basePosition as Vector3;
-      const selectionRing = die.userData.selectionRing as SelectionRingMesh | undefined;
+      const focusRing = die.userData.focusRing as FocusRingMesh | undefined;
+      const selectedRing = die.userData.selectedRing as SelectedRingMesh | undefined;
       const pulse = selected ? (Math.sin(pulseTime * RING_PULSE_SPEED + index * 0.55) + 1) * 0.5 : 0;
 
       if (!this.transitionActive) {
@@ -1010,17 +1036,19 @@ export class TrayScene {
         material.emissiveIntensity = selected ? 0.28 : hovered ? 0.12 : 0;
       });
 
-      if (selectionRing) {
-        selectionRing.visible = selected || focused;
-        selectionRing.material.color.set(selected ? SELECTED_RING_COLOR : FOCUS_RING_COLOR);
-        selectionRing.material.opacity = selected
-          ? SELECTED_RING_BASE_OPACITY + pulse * 0.14
-          : FOCUS_RING_OPACITY;
+      if (focusRing) {
+        focusRing.visible = focused;
+        focusRing.material.opacity = FOCUS_RING_OPACITY;
+      }
+
+      if (selectedRing) {
+        selectedRing.visible = selected;
+        selectedRing.material.opacity = SELECTED_RING_BASE_OPACITY + pulse * 0.1;
       }
     });
 
     this.refreshCursor();
-    this.updateDynamicOverlays(pulseTime);
+    this.updateDynamicOverlays();
   }
 
   private createLights(): void {
@@ -1108,9 +1136,9 @@ export class TrayScene {
     return die;
   }
 
-  private createSelectionRing(): SelectionRingMesh {
+  private createFocusRing(): FocusRingMesh {
     const ring = new Mesh(
-      new RingGeometry(DIE_SIZE * 0.62, DIE_SIZE * 0.84, 48),
+      new RingGeometry(RING_INNER_RADIUS, RING_OUTER_RADIUS, 48),
       new MeshBasicMaterial({
         color: FOCUS_RING_COLOR,
         transparent: true,
@@ -1120,7 +1148,23 @@ export class TrayScene {
     );
     ring.rotation.x = -Math.PI / 2;
     ring.visible = false;
-    ring.renderOrder = 2;
+    ring.renderOrder = 3;
+    return ring;
+  }
+
+  private createSelectedRing(): SelectedRingMesh {
+    const ring = new Mesh(
+      new RingGeometry(RING_INNER_RADIUS, RING_OUTER_RADIUS, 48, 1, Math.PI, Math.PI),
+      new MeshBasicMaterial({
+        color: SELECTED_RING_COLOR,
+        transparent: true,
+        opacity: SELECTED_RING_BASE_OPACITY,
+        depthWrite: false,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.visible = false;
+    ring.renderOrder = 4;
     return ring;
   }
 
@@ -1140,19 +1184,25 @@ export class TrayScene {
     return shadow;
   }
 
-  private updateDynamicOverlays(timeMs: number): void {
+  private updateDynamicOverlays(): void {
     this.diceMeshes.forEach((die, index) => {
       const selected = this.selectedIndices.has(index);
       const focused = this.interactive && this.hoveredIndex === index;
       const hovered = focused && !selected;
-      const pulse = selected ? (Math.sin(timeMs * RING_PULSE_SPEED + index * 0.55) + 1) * 0.5 : 0;
-      const selectionRing = die.userData.selectionRing as SelectionRingMesh | undefined;
+      const focusRing = die.userData.focusRing as FocusRingMesh | undefined;
+      const selectedRing = die.userData.selectedRing as SelectedRingMesh | undefined;
       const shadowMesh = die.userData.shadowMesh as ContactShadowMesh | undefined;
 
-      if (selectionRing) {
-        selectionRing.visible = selected || focused;
-        selectionRing.position.set(die.position.x, SHADOW_Y + 0.002, die.position.z);
-        selectionRing.scale.setScalar(selected ? 1.02 + pulse * 0.1 : 0.98);
+      if (focusRing) {
+        focusRing.visible = focused;
+        focusRing.position.set(die.position.x, SHADOW_Y + 0.002, die.position.z);
+        focusRing.scale.setScalar(1);
+      }
+
+      if (selectedRing) {
+        selectedRing.visible = selected;
+        selectedRing.position.set(die.position.x, SHADOW_Y + 0.0032, die.position.z);
+        selectedRing.scale.setScalar(1);
       }
 
       if (shadowMesh) {
@@ -1188,17 +1238,18 @@ export class TrayScene {
       return null;
     }
 
-    let bestIndex = 0;
+    let bestIndex: number | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
 
     this.diceMeshes.forEach((_, index) => {
-      const point = this.getDieScreenPoint(index);
+      const point = this.getDieNavigationPoint(index);
 
       if (!point) {
         return;
       }
 
-      const distance = Math.hypot(point.x, point.y);
+      const distance = point.length();
+
       if (distance < bestDistance) {
         bestDistance = distance;
         bestIndex = index;
@@ -1209,49 +1260,90 @@ export class TrayScene {
   }
 
   private findNextFocusIndex(currentIndex: number, direction: NavigationDirection): number | null {
-    const currentPoint = this.getDieScreenPoint(currentIndex);
+    const currentPoint = this.getDieNavigationPoint(currentIndex);
 
     if (!currentPoint) {
       return this.getDefaultFocusIndex();
     }
 
-    const directionVector = this.getNavigationDirectionVector(direction);
-    const perpendicularVector = new Vector2(-directionVector.y, directionVector.x);
-    let bestIndex: number | null = null;
-    let bestScore = Number.NEGATIVE_INFINITY;
+    let bestCandidate: NavigationCandidate | null = null;
 
-    this.diceMeshes.forEach((_, index) => {
+    for (let index = 0; index < this.diceMeshes.length; index += 1) {
       if (index === currentIndex) {
-        return;
+        continue;
       }
 
-      const point = this.getDieScreenPoint(index);
+      const point = this.getDieNavigationPoint(index);
 
       if (!point) {
-        return;
+        continue;
       }
 
-      const delta = point.clone().sub(currentPoint);
-      const primary = delta.dot(directionVector);
+      const deltaX = point.x - currentPoint.x;
+      const deltaY = point.y - currentPoint.y;
+      const candidate = this.buildNavigationCandidate(index, direction, deltaX, deltaY);
 
-      if (primary <= 0.015) {
-        return;
+      if (!candidate) {
+        continue;
       }
 
-      const distance = delta.length();
-      const secondary = Math.abs(delta.dot(perpendicularVector));
-      const score = primary / (0.12 + secondary + distance * 0.45);
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = index;
+      if (this.isBetterNavigationCandidate(candidate, bestCandidate)) {
+        bestCandidate = candidate;
       }
-    });
+    }
 
-    return bestIndex;
+    return bestCandidate ? bestCandidate.index : null;
   }
 
-  private getDieScreenPoint(index: number): Vector2 | null {
+  private buildNavigationCandidate(
+    index: number,
+    direction: NavigationDirection,
+    deltaX: number,
+    deltaY: number,
+  ): NavigationCandidate | null {
+    const primaryDistance = this.getPrimaryNavigationDistance(direction, deltaX, deltaY);
+
+    if (primaryDistance <= NAVIGATION_PRIMARY_THRESHOLD) {
+      return null;
+    }
+
+    const lateralDistance = this.getLateralNavigationDistance(direction, deltaX, deltaY);
+    const corridorBand =
+      lateralDistance <= NAVIGATION_NARROW_CORRIDOR ? 0 : lateralDistance <= NAVIGATION_WIDE_CORRIDOR ? 1 : 2;
+
+    return {
+      index,
+      primaryDistance,
+      lateralDistance,
+      euclideanDistance: Math.hypot(deltaX, deltaY),
+      corridorBand,
+    };
+  }
+
+  private isBetterNavigationCandidate(
+    candidate: NavigationCandidate,
+    currentBest: NavigationCandidate | null,
+  ): boolean {
+    if (!currentBest) {
+      return true;
+    }
+
+    if (candidate.corridorBand !== currentBest.corridorBand) {
+      return candidate.corridorBand < currentBest.corridorBand;
+    }
+
+    if (Math.abs(candidate.primaryDistance - currentBest.primaryDistance) > NAVIGATION_COMPARISON_EPSILON) {
+      return candidate.primaryDistance < currentBest.primaryDistance;
+    }
+
+    if (Math.abs(candidate.lateralDistance - currentBest.lateralDistance) > NAVIGATION_COMPARISON_EPSILON) {
+      return candidate.lateralDistance < currentBest.lateralDistance;
+    }
+
+    return candidate.euclideanDistance < currentBest.euclideanDistance;
+  }
+
+  private getDieNavigationPoint(index: number): Vector2 | null {
     const die = this.diceMeshes[index];
 
     if (!die) {
@@ -1259,25 +1351,46 @@ export class TrayScene {
     }
 
     const basePosition = (die.userData.basePosition as Vector3 | undefined) ?? die.position;
-    const projected = basePosition.clone().project(this.camera);
+    const { rightAxis, forwardAxis } = this.getNavigationAxes();
 
-    if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
-      return null;
-    }
-
-    return new Vector2(projected.x, projected.y);
+    return new Vector2(basePosition.dot(rightAxis), basePosition.dot(forwardAxis));
   }
 
-  private getNavigationDirectionVector(direction: NavigationDirection): Vector2 {
+  private getNavigationAxes(): { rightAxis: Vector3; forwardAxis: Vector3 } {
+    const forwardAxis = this.cameraLookTarget.clone().sub(this.camera.position);
+    forwardAxis.y = 0;
+
+    if (forwardAxis.lengthSq() < 1e-6) {
+      forwardAxis.set(0, 0, -1);
+    } else {
+      forwardAxis.normalize();
+    }
+
+    const rightAxis = new Vector3(-forwardAxis.z, 0, forwardAxis.x).normalize();
+    return { rightAxis, forwardAxis };
+  }
+
+  private getPrimaryNavigationDistance(direction: NavigationDirection, deltaX: number, deltaY: number): number {
     switch (direction) {
       case 'up':
-        return new Vector2(0, 1);
+        return deltaY;
       case 'down':
-        return new Vector2(0, -1);
+        return -deltaY;
       case 'left':
-        return new Vector2(-1, 0);
+        return -deltaX;
       case 'right':
-        return new Vector2(1, 0);
+        return deltaX;
+    }
+  }
+
+  private getLateralNavigationDistance(direction: NavigationDirection, deltaX: number, deltaY: number): number {
+    switch (direction) {
+      case 'up':
+      case 'down':
+        return Math.abs(deltaX);
+      case 'left':
+      case 'right':
+        return Math.abs(deltaY);
     }
   }
 
