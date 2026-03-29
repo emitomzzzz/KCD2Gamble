@@ -165,6 +165,44 @@ input {
   gap: 0.75rem;
 }
 
+
+.setup-help {
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #5c4e3c;
+}
+
+.seat-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.seat-button {
+  min-height: 3rem;
+  font-weight: 700;
+}
+
+.seat-button.is-selected {
+  background: #d9c08a;
+  color: #2b2117;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
+}
+
+.seat-button.is-owned {
+  border: 1px solid rgba(115, 92, 54, 0.28);
+}
+
+.seat-button.is-unavailable {
+  opacity: 0.56;
+}
+
+.seat-status {
+  min-height: 1.5rem;
+  font-size: 0.9rem;
+  color: #6b573e;
+}
+
 .phase-banner {
   position: absolute;
   top: 1.2rem;
@@ -602,6 +640,34 @@ input {
   display: grid;
   grid-template-columns: 1fr;
   gap: clamp(0.5rem, 0.85vmin, 0.65rem);
+}
+
+
+.action-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+}
+
+.seat-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4.75rem;
+  padding: 0.22rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(255, 250, 242, 0.62);
+  border: 1px solid rgba(118, 99, 72, 0.14);
+  color: #6c5a45;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.seat-chip.is-active {
+  background: rgba(246, 230, 183, 0.9);
+  color: #2d2418;
 }
 
 .action-hints {

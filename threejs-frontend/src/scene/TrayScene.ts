@@ -180,6 +180,7 @@ export class TrayScene {
   private hoveredIndex: number | null = null;
   private interactive = false;
   private dieClickHandler: ((index: number) => void) | null = null;
+  private focusChangeHandler: ((index: number | null) => void) | null = null;
   private animationFrameId: number | null = null;
   private transitionQueue: Promise<void> = Promise.resolve();
   private transitionActive = false;
@@ -259,22 +260,33 @@ export class TrayScene {
     this.dieClickHandler = handler;
   }
 
+  setFocusChangeHandler(handler: ((index: number | null) => void) | null): void {
+    this.focusChangeHandler = handler;
+  }
+
   setInteractive(interactive: boolean): void {
     this.interactive = interactive;
 
-    if (!interactive && this.hoveredIndex !== null) {
-      this.hoveredIndex = null;
-      this.updateDieHighlights();
-      return;
-    }
-
     if (interactive && this.diceMeshes.length > 0 && this.hoveredIndex === null) {
-      this.hoveredIndex = this.getDefaultFocusIndex();
-      this.updateDieHighlights();
+      this.setFocusedIndex(this.getDefaultFocusIndex());
       return;
     }
 
     this.refreshCursor();
+  }
+
+  setFocusedIndex(index: number | null): void {
+    const normalizedIndex =
+      typeof index === 'number' && index >= 0 && index < this.diceMeshes.length ? index : null;
+
+    if (this.hoveredIndex === normalizedIndex) {
+      this.refreshCursor();
+      return;
+    }
+
+    this.hoveredIndex = normalizedIndex;
+    this.updateDieHighlights();
+    this.focusChangeHandler?.(this.hoveredIndex);
   }
 
   moveFocus(direction: NavigationDirection): boolean {
@@ -294,17 +306,16 @@ export class TrayScene {
       return nextIndex !== null;
     }
 
-    this.hoveredIndex = nextIndex;
-    this.updateDieHighlights();
+    this.setFocusedIndex(nextIndex);
     return true;
   }
 
   getFocusedIndex(): number | null {
-    if (!this.interactive || this.diceMeshes.length === 0) {
+    if (this.diceMeshes.length === 0) {
       return null;
     }
 
-    return this.hoveredIndex ?? this.getDefaultFocusIndex();
+    return this.hoveredIndex ?? (this.interactive ? this.getDefaultFocusIndex() : null);
   }
 
   transitionToPlayView(): Promise<void> {
@@ -749,8 +760,8 @@ export class TrayScene {
     const index = typeof hit?.object.userData.index === 'number' ? (hit.object.userData.index as number) : null;
 
     if (this.hoveredIndex !== index) {
-      this.hoveredIndex = index;
-      this.updateDieHighlights();
+      this.setFocusedIndex(index);
+      return;
     }
 
     this.refreshCursor();
@@ -762,9 +773,7 @@ export class TrayScene {
       return;
     }
 
-    this.hoveredIndex = null;
-    this.updateDieHighlights();
-    this.refreshCursor();
+    this.setFocusedIndex(null);
   };
 
   private clearActiveDice(): void {
@@ -1018,7 +1027,7 @@ export class TrayScene {
 
     this.diceMeshes.forEach((die, index) => {
       const selected = this.selectedIndices.has(index);
-      const focused = this.interactive && this.hoveredIndex === index;
+      const focused = this.hoveredIndex === index;
       const hovered = focused && !selected;
       const basePosition = die.userData.basePosition as Vector3;
       const focusRing = die.userData.focusRing as FocusRingMesh | undefined;
@@ -1187,7 +1196,7 @@ export class TrayScene {
   private updateDynamicOverlays(): void {
     this.diceMeshes.forEach((die, index) => {
       const selected = this.selectedIndices.has(index);
-      const focused = this.interactive && this.hoveredIndex === index;
+      const focused = this.hoveredIndex === index;
       const hovered = focused && !selected;
       const focusRing = die.userData.focusRing as FocusRingMesh | undefined;
       const selectedRing = die.userData.selectedRing as SelectedRingMesh | undefined;

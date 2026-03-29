@@ -1,4 +1,6 @@
-﻿export type GamePhase =
+export type SeatId = 'A' | 'B';
+
+export type GamePhase =
   | 'ready_to_roll'
   | 'awaiting_selection'
   | 'can_bank_or_continue'
@@ -16,18 +18,34 @@ export interface AvailableActions {
 
 export interface GameSnapshot {
   target_score: number;
-  current_player: string;
+  current_player: SeatId;
   scores: Record<string, number>;
   turn_points: number;
   remaining_dice: number;
   current_roll: number[];
   phase: GamePhase;
-  winner: string | null;
+  winner: SeatId | null;
   available_actions: AvailableActions;
 }
 
+export interface SeatPresence {
+  occupied: boolean;
+  connected: boolean;
+}
+
+export interface CursorState {
+  focused_index: number | null;
+  selected_indices: number[];
+}
+
+export interface RoomState {
+  room_id: string;
+  seats: Record<SeatId, SeatPresence>;
+  cursors: Record<SeatId, CursorState>;
+}
+
 export interface RollPayload {
-  player: string;
+  player: SeatId;
   dice: number[];
   has_scoring_option: boolean;
 }
@@ -40,7 +58,7 @@ export interface PreviewPayload {
 }
 
 export interface TakeResultPayload {
-  player: string;
+  player: SeatId;
   selected_dice: number[];
   points_gained: number;
   turn_points: number;
@@ -49,18 +67,46 @@ export interface TakeResultPayload {
 }
 
 export interface TurnResultPayload {
-  player: string;
+  player: SeatId;
   banked_points: number;
   total_score: number;
-  next_player: string | null;
+  next_player: SeatId | null;
   won: boolean;
 }
 
 export interface GameActionResponse {
   message: string;
   snapshot: GameSnapshot;
+  room: RoomState;
   roll?: RollPayload;
   preview?: PreviewPayload;
   take_result?: TakeResultPayload;
   turn_result?: TurnResultPayload;
+}
+
+export interface SessionInfo {
+  room_id: string;
+  seat: SeatId;
+  seat_token: string;
+}
+
+export interface RoomSnapshotResponse {
+  message: string;
+  snapshot: GameSnapshot;
+  room: RoomState;
+}
+
+export interface JoinRoomResponse {
+  message: string;
+  session: SessionInfo;
+  snapshot: GameSnapshot;
+  room: RoomState;
+}
+
+export interface RoomEvent {
+  type: 'room_state' | 'game_state' | 'cursor_state';
+  message: string;
+  snapshot: GameSnapshot;
+  room: RoomState;
+  actor_seat: SeatId | null;
 }

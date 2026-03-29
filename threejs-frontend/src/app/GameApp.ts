@@ -1,15 +1,30 @@
 import {
+  DEFAULT_ROOM_ID,
   bankCurrentTurn,
+  buildRoomSocketUrl,
   continuePlaying,
-  getGame,
+  getRoomState,
+  getSessionInfo,
+  joinRoom,
+  leaveRoom,
   newGame,
   previewSelection,
   resolveFarkleTurn,
   rollDice,
+  setSessionInfo,
   takeSelection,
 } from '../api/gameApi';
 import { TrayScene } from '../scene/TrayScene';
-import type { GameActionResponse, GameSnapshot, PreviewPayload } from '../types/game';
+import type {
+  GameActionResponse,
+  GameSnapshot,
+  JoinRoomResponse,
+  PreviewPayload,
+  RoomEvent,
+  RoomState,
+  SeatId,
+  SessionInfo,
+} from '../types/game';
 
 interface ElementMap {
   targetInput: HTMLInputElement;
@@ -17,10 +32,14 @@ interface ElementMap {
   setupForm: HTMLElement;
   newGameButton: HTMLButtonElement;
   victoryNewGameButton: HTMLButtonElement;
+  seatAButton: HTMLButtonElement;
+  seatBButton: HTMLButtonElement;
+  seatStatus: HTMLElement;
   statusPanel: HTMLElement;
   actionPanel: HTMLElement;
   rollButton: HTMLButtonElement;
   bankButton: HTMLButtonElement;
+  localSeatChip: HTMLElement;
   connectionBadge: HTMLElement;
   headerA: HTMLElement;
   headerB: HTMLElement;
@@ -49,49 +68,74 @@ interface ActionOptions {
 }
 
 const CONFETTI_COLORS = ['#f0c662', '#dd7d56', '#6aa9d7', '#7bb66f', '#c86bb1', '#f4e8bf'];
+const SESSION_STORAGE_KEY = 'kcd2gamble.lan.session';
+const SOCKET_RECONNECT_DELAY_MS = 1500;
 
 export class GameApp {
   private readonly elements: ElementMap;
   private readonly scene: TrayScene;
   private snapshot: GameSnapshot | null = null;
+  private roomState: RoomState | null = null;
   private preview: PreviewPayload | null = null;
+  private session: SessionInfo | null = null;
+  private selectedSeat: SeatId = 'A';
   private selectedIndices: number[] = [];
+  private roomSocket: WebSocket | null = null;
+  private backendConnected = false;
   private busy = false;
   private presentationBusy = false;
   private hudVisible = false;
   private setupVisible = true;
+  private disposed = false;
   private previewToken = 0;
   private bannerTimeoutId: number | null = null;
   private confettiCleanupId: number | null = null;
+  private socketReconnectId: number | null = null;
   private presentedVictoryKey: string | null = null;
+  private lastSentCursorSignature: string | null = null;
 
   constructor(root: HTMLElement, scene: TrayScene) {
     this.scene = scene;
     this.elements = this.collectElements(root);
+    this.session = getSessionInfo();
+    this.selectedSeat = this.session?.seat ?? 'A';
     this.bindEvents();
     this.scene.setDieClickHandler((index) => {
       void this.toggleDie(index);
     });
+    this.scene.setFocusChangeHandler(this.handleSceneFocusChanged);
   }
 
   async init(): Promise<void> {
-    try {
-      const response = await getGame();
-      this.markConnection(true);
-      this.elements.targetInput.value = `${response.snapshot.target_score ?? 5000}`;
-    } catch (error) {
-      this.markConnection(false);
-      this.showBanner(this.describeError(error), 'warn');
+    await this.refreshRoomState(false);
+
+    const storedSession = this.loadStoredSession();
+    if (storedSession) {
+      try {
+        await this.joinSeat(storedSession.seat, storedSession.seat_token, false);
+        this.hudVisible = true;
+        this.setupVisible = false;
+        await this.scene.transitionToPlayView();
+      } catch (error) {
+        this.clearSessionState();
+        this.showBanner(this.describeError(error), 'warn');
+      }
     }
 
-    this.scene.setDiceValues([]);
+    this.scene.setDiceValues(this.snapshot?.current_roll ?? []);
     this.scene.clearTakenDice();
+    this.syncScene();
     this.render();
   }
 
   dispose(): void {
+    this.disposed = true;
     window.removeEventListener('keydown', this.handleKeyDown);
+    this.releaseSeatOnUnload();
+    this.closeRoomSocket();
+    this.clearSocketReconnectTimer();
     this.scene.setDieClickHandler(null);
+    this.scene.setFocusChangeHandler(null);
     this.clearBannerTimer();
     this.clearConfettiTimer();
   }
@@ -113,10 +157,14 @@ export class GameApp {
       setupForm: query<HTMLElement>('#setup-form'),
       newGameButton: query<HTMLButtonElement>('#new-game-button'),
       victoryNewGameButton: query<HTMLButtonElement>('#victory-new-game-button'),
+      seatAButton: query<HTMLButtonElement>('#seat-a-button'),
+      seatBButton: query<HTMLButtonElement>('#seat-b-button'),
+      seatStatus: query<HTMLElement>('#seat-status'),
       statusPanel: query<HTMLElement>('#status-panel'),
       actionPanel: query<HTMLElement>('#action-panel'),
       rollButton: query<HTMLButtonElement>('#roll-button'),
       bankButton: query<HTMLButtonElement>('#bank-button'),
+      localSeatChip: query<HTMLElement>('#local-seat-chip'),
       connectionBadge: query<HTMLElement>('#connection-badge'),
       headerA: query<HTMLElement>('#header-a'),
       headerB: query<HTMLElement>('#header-b'),
@@ -141,8 +189,14 @@ export class GameApp {
 
   private bindEvents(): void {
     window.addEventListener('keydown', this.handleKeyDown);
+    this.elements.seatAButton.addEventListener('click', () => {
+      this.handleSeatSelection('A');
+    });
+    this.elements.seatBButton.addEventListener('click', () => {
+      this.handleSeatSelection('B');
+    });
     this.elements.newGameButton.addEventListener('click', () => {
-      void this.handleNewGame();
+      void this.handleSetupSubmit();
     });
     this.elements.victoryNewGameButton.addEventListener('click', () => {
       this.hudVisible = false;
@@ -159,12 +213,20 @@ export class GameApp {
     });
   }
 
+  private readonly handleSceneFocusChanged = (focusedIndex: number | null): void => {
+    if (!this.snapshot || !this.isLocalTurn(this.snapshot) || this.snapshot.phase !== 'awaiting_selection') {
+      return;
+    }
+
+    this.updateLocalCursorState(focusedIndex);
+  };
+
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     if (event.ctrlKey || event.metaKey || event.altKey) {
       return;
     }
 
-    if (this.uiBusy || this.setupVisible || !this.hudVisible || !this.snapshot) {
+    if (this.uiBusy || this.setupVisible || !this.hudVisible || !this.snapshot || !this.isLocalTurn(this.snapshot)) {
       return;
     }
 
@@ -233,13 +295,19 @@ export class GameApp {
   }
 
   private markConnection(connected: boolean): void {
-    this.elements.connectionBadge.textContent = connected ? '后端已连接' : '后端未连接';
+    this.backendConnected = connected;
     this.elements.connectionBadge.classList.toggle('badge-online', connected);
     this.elements.connectionBadge.classList.toggle('badge-offline', !connected);
   }
 
+  private handleSeatSelection(seat: SeatId): void {
+    this.selectedSeat = seat;
+    this.render();
+  }
+
   private openSetupOverlay(): void {
     this.setupVisible = true;
+    void this.refreshRoomState(false);
     this.render();
   }
 
@@ -248,7 +316,7 @@ export class GameApp {
     this.render();
   }
 
-  private async handleNewGame(): Promise<void> {
+  private async handleSetupSubmit(): Promise<void> {
     if (this.uiBusy) {
       return;
     }
@@ -256,26 +324,375 @@ export class GameApp {
     const targetScore = Number.parseInt(this.elements.targetInput.value, 10);
 
     if (!Number.isInteger(targetScore) || targetScore <= 0) {
-      this.showBanner('目标分数必须是正整数', 'warn');
+      this.showBanner('目标分数必须是正整数。', 'warn');
       return;
     }
 
-    await this.runAction(() => newGame({ target_score: targetScore }), {
-      pendingMessage: '正在开始新对局...',
-      onSuccess: async () => {
-        this.hideVictoryOverlay();
-        this.clearConfetti();
-        this.hudVisible = true;
-        this.closeSetupOverlay();
-        await this.scene.transitionToPlayView();
-      },
+    if (this.session && this.session.seat !== this.selectedSeat) {
+      await this.leaveCurrentSeat();
+    }
+
+    if (!this.session) {
+      try {
+        await this.joinSeat(this.selectedSeat, null, true);
+      } catch (error) {
+        this.markConnection(false);
+        this.showBanner(this.describeError(error), 'warn');
+        this.render();
+        return;
+      }
+    }
+
+    if (this.session?.seat === 'A') {
+      await this.runAction(() => newGame({ target_score: targetScore }), {
+        pendingMessage: '正在开始新对局...',
+        onSuccess: async () => {
+          this.hideVictoryOverlay();
+          this.clearConfetti();
+          this.hudVisible = true;
+          this.closeSetupOverlay();
+          await this.scene.transitionToPlayView();
+        },
+      });
+      return;
+    }
+
+    this.hideVictoryOverlay();
+    this.clearConfetti();
+    this.hudVisible = true;
+    this.closeSetupOverlay();
+    await this.scene.transitionToPlayView();
+    this.showBanner('已进入对局，等待玩家 A 开始或轮到你。', 'info');
+    this.render();
+  }
+
+  private async joinSeat(seat: SeatId, seatToken: string | null, announce = true): Promise<JoinRoomResponse> {
+    const response = await joinRoom({
+      room_id: DEFAULT_ROOM_ID,
+      seat,
+      seat_token: seatToken,
     });
+
+    this.markConnection(true);
+    this.session = response.session;
+    this.selectedSeat = response.session.seat;
+    this.snapshot = response.snapshot;
+    this.roomState = response.room;
+    setSessionInfo(response.session);
+    this.saveStoredSession(response.session);
+    this.openRoomSocket();
+
+    if (announce) {
+      this.showBanner(`已加入玩家 ${response.session.seat}。`, 'success');
+    }
+
+    return response;
+  }
+
+  private async leaveCurrentSeat(): Promise<void> {
+    if (!this.session) {
+      return;
+    }
+
+    try {
+      const response = await leaveRoom();
+      if (response) {
+        this.snapshot = response.snapshot;
+        this.roomState = response.room;
+      }
+    } catch {
+      // Ignore leave errors during seat switching.
+    }
+
+    this.clearSessionState();
+    await this.refreshRoomState(false);
+  }
+
+  private openRoomSocket(): void {
+    if (!this.session) {
+      return;
+    }
+
+    const url = buildRoomSocketUrl(this.session);
+    if (this.roomSocket && (this.roomSocket.readyState === WebSocket.OPEN || this.roomSocket.readyState === WebSocket.CONNECTING)) {
+      if (this.roomSocket.url === url) {
+        return;
+      }
+      this.closeRoomSocket();
+    }
+
+    this.clearSocketReconnectTimer();
+    const socket = new WebSocket(url);
+    this.roomSocket = socket;
+
+    socket.addEventListener('open', () => {
+      if (this.roomSocket !== socket) {
+        return;
+      }
+      this.markConnection(true);
+      this.render();
+    });
+
+    socket.addEventListener('message', (event) => {
+      if (this.roomSocket !== socket) {
+        return;
+      }
+      this.handleRoomSocketMessage(event.data);
+    });
+
+    socket.addEventListener('close', (event) => {
+      if (this.roomSocket !== socket) {
+        return;
+      }
+      this.roomSocket = null;
+
+      if (this.disposed) {
+        return;
+      }
+
+      if (event.code === 4403) {
+        this.clearSessionState();
+        this.hudVisible = false;
+        this.openSetupOverlay();
+        this.showBanner('座位已失效，请重新加入。', 'warn');
+        return;
+      }
+
+      this.markConnection(false);
+      if (this.session) {
+        this.scheduleSocketReconnect();
+      }
+    });
+
+    socket.addEventListener('error', () => {
+      if (this.roomSocket !== socket) {
+        return;
+      }
+      this.markConnection(false);
+    });
+  }
+  private closeRoomSocket(): void {
+    if (!this.roomSocket) {
+      return;
+    }
+
+    const socket = this.roomSocket;
+    this.roomSocket = null;
+    socket.close();
+  }
+
+  private scheduleSocketReconnect(): void {
+    if (this.socketReconnectId !== null || !this.session) {
+      return;
+    }
+
+    this.socketReconnectId = window.setTimeout(() => {
+      this.socketReconnectId = null;
+      if (!this.disposed && this.session) {
+        this.openRoomSocket();
+      }
+    }, SOCKET_RECONNECT_DELAY_MS);
+  }
+
+  private clearSocketReconnectTimer(): void {
+    if (this.socketReconnectId === null) {
+      return;
+    }
+
+    window.clearTimeout(this.socketReconnectId);
+    this.socketReconnectId = null;
+  }
+
+  private handleRoomSocketMessage(payload: string): void {
+    try {
+      const event = JSON.parse(payload) as RoomEvent;
+      this.roomState = event.room;
+      this.markConnection(true);
+
+      if (event.type === 'cursor_state') {
+        this.snapshot = event.snapshot;
+        this.syncScene();
+        this.render();
+        return;
+      }
+
+      if (this.session && event.actor_seat === this.session.seat && this.busy) {
+        this.render();
+        return;
+      }
+
+      const response: GameActionResponse = {
+        message: event.message,
+        snapshot: event.snapshot,
+        room: event.room,
+      };
+      this.applyResponse(response, true);
+    } catch (error) {
+      console.error('Failed to handle room event', error);
+    }
+  }
+
+  private async refreshRoomState(showError = true): Promise<void> {
+    try {
+      const response = await getRoomState(DEFAULT_ROOM_ID);
+      this.markConnection(true);
+      this.snapshot = response.snapshot;
+      this.roomState = response.room;
+      if (!this.session) {
+        this.elements.targetInput.value = `${response.snapshot.target_score ?? 5000}`;
+      }
+    } catch (error) {
+      this.markConnection(false);
+      if (showError) {
+        this.showBanner(this.describeError(error), 'warn');
+      }
+    }
+  }
+
+  private loadStoredSession(): SessionInfo | null {
+    try {
+      const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw) as SessionInfo;
+      if (!parsed.room_id || !parsed.seat || !parsed.seat_token) {
+        return null;
+      }
+      setSessionInfo(parsed);
+      this.session = parsed;
+      this.selectedSeat = parsed.seat;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveStoredSession(session: SessionInfo): void {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  }
+
+  private clearSessionState(): void {
+    this.closeRoomSocket();
+    this.clearSocketReconnectTimer();
+    this.session = null;
+    this.lastSentCursorSignature = null;
+    setSessionInfo(null);
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+  }
+
+  private releaseSeatOnUnload(): void {
+    if (!this.session) {
+      return;
+    }
+
+    const payload = JSON.stringify({
+      room_id: this.session.room_id,
+      seat: this.session.seat,
+      seat_token: this.session.seat_token,
+    });
+    const url = `${window.location.origin}/api/room/leave`;
+    const body = new Blob([payload], { type: 'application/json' });
+
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(url, body);
+      } else {
+        void fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          keepalive: true,
+        });
+      }
+    } catch {
+      // Ignore unload errors.
+    }
+
+    this.clearSessionState();
+  }
+
+  private isLocalTurn(snapshot: GameSnapshot): boolean {
+    return this.session?.seat === snapshot.current_player;
+  }
+
+  private getDisplayedCursorState(): { focusedIndex: number | null; selectedIndices: number[] } {
+    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection' || !this.roomState) {
+      return { focusedIndex: null, selectedIndices: [] };
+    }
+
+    if (this.isLocalTurn(this.snapshot)) {
+      return {
+        focusedIndex: this.scene.getFocusedIndex(),
+        selectedIndices: [...this.selectedIndices],
+      };
+    }
+
+    const remoteCursor = this.roomState.cursors[this.snapshot.current_player];
+    return {
+      focusedIndex: remoteCursor?.focused_index ?? null,
+      selectedIndices: [...(remoteCursor?.selected_indices ?? [])],
+    };
+  }
+
+  private updateLocalCursorState(focusedIndex: number | null = this.scene.getFocusedIndex()): void {
+    if (!this.snapshot || !this.roomState || !this.session) {
+      return;
+    }
+
+    if (!this.isLocalTurn(this.snapshot) || this.snapshot.phase !== 'awaiting_selection') {
+      return;
+    }
+
+    const nextCursor = {
+      focused_index: focusedIndex,
+      selected_indices: [...this.selectedIndices],
+    };
+
+    this.roomState = {
+      ...this.roomState,
+      cursors: {
+        ...this.roomState.cursors,
+        [this.session.seat]: nextCursor,
+      },
+    };
+
+    this.sendCursorUpdate(nextCursor.focused_index, nextCursor.selected_indices);
+    this.render();
+  }
+
+  private sendCursorUpdate(focusedIndex: number | null, selectedIndices: number[]): void {
+    if (
+      !this.snapshot ||
+      !this.session ||
+      !this.roomSocket ||
+      this.roomSocket.readyState !== WebSocket.OPEN ||
+      this.setupVisible ||
+      this.snapshot.phase !== 'awaiting_selection' ||
+      !this.isLocalTurn(this.snapshot)
+    ) {
+      return;
+    }
+
+    const payload = {
+      type: 'cursor_state' as const,
+      focused_index: focusedIndex,
+      selected_indices: [...selectedIndices],
+    };
+    const signature = JSON.stringify(payload);
+
+    if (signature === this.lastSentCursorSignature) {
+      return;
+    }
+
+    this.lastSentCursorSignature = signature;
+    this.roomSocket.send(signature);
   }
 
   private async handlePrimaryAction(): Promise<void> {
     const snapshot = this.snapshot;
 
-    if (!snapshot || this.uiBusy || this.setupVisible) {
+    if (!snapshot || this.uiBusy || this.setupVisible || !this.isLocalTurn(snapshot)) {
       return;
     }
 
@@ -293,7 +710,7 @@ export class GameApp {
 
     if (snapshot.phase === 'awaiting_selection') {
       if (!this.hasValidPreview()) {
-        this.showBanner('请先选择有效的计分骰子', 'warn');
+        this.showBanner('请先选择有效的计分骰子。', 'warn');
         this.render();
         return;
       }
@@ -329,13 +746,13 @@ export class GameApp {
   private async handleSaveAndEndTurn(): Promise<void> {
     const snapshot = this.snapshot;
 
-    if (!snapshot || this.uiBusy || this.setupVisible) {
+    if (!snapshot || this.uiBusy || this.setupVisible || !this.isLocalTurn(snapshot)) {
       return;
     }
 
     if (snapshot.phase === 'awaiting_selection') {
       if (!this.hasValidPreview()) {
-        this.showBanner('请先选择有效的计分骰子', 'warn');
+        this.showBanner('请先选择有效的计分骰子。', 'warn');
         this.render();
         return;
       }
@@ -360,7 +777,13 @@ export class GameApp {
   }
 
   private async toggleDie(index: number): Promise<void> {
-    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection' || this.uiBusy || this.setupVisible) {
+    if (
+      !this.snapshot ||
+      this.snapshot.phase !== 'awaiting_selection' ||
+      this.uiBusy ||
+      this.setupVisible ||
+      !this.isLocalTurn(this.snapshot)
+    ) {
       return;
     }
 
@@ -375,7 +798,7 @@ export class GameApp {
     this.selectedIndices = Array.from(selected).sort((left, right) => left - right);
     this.preview = null;
     this.scene.setSelectedIndices(this.selectedIndices);
-    this.render();
+    this.updateLocalCursorState();
 
     if (this.selectedIndices.length === 0) {
       return;
@@ -391,7 +814,9 @@ export class GameApp {
       }
 
       this.snapshot = response.snapshot;
+      this.roomState = response.room;
       this.preview = response.preview ?? null;
+      this.updateLocalCursorState();
     } catch (error) {
       if (token !== this.previewToken) {
         return;
@@ -453,15 +878,16 @@ export class GameApp {
       this.render();
     }
   }
-
   private applyResponse(response: GameActionResponse, resetSelection: boolean): void {
     const previousSnapshot = this.snapshot;
     this.snapshot = response.snapshot;
+    this.roomState = response.room;
 
     if (resetSelection || this.snapshot.phase !== 'awaiting_selection') {
       this.selectedIndices = [];
       this.preview = null;
       this.previewToken += 1;
+      this.lastSentCursorSignature = null;
     } else {
       this.preview = response.preview ?? this.preview;
     }
@@ -485,27 +911,41 @@ export class GameApp {
 
   private syncScene(): void {
     const diceValues = this.snapshot?.current_roll ?? [];
+    const isInteractive =
+      this.hudVisible &&
+      !this.setupVisible &&
+      this.snapshot?.phase === 'awaiting_selection' &&
+      !this.uiBusy &&
+      !!this.snapshot &&
+      this.isLocalTurn(this.snapshot);
+
     this.scene.setDiceValues(diceValues);
-    this.scene.setSelectedIndices(this.selectedIndices);
-    this.scene.setInteractive(
-      this.hudVisible && !this.setupVisible && this.snapshot?.phase === 'awaiting_selection' && !this.uiBusy,
-    );
+    this.scene.setInteractive(isInteractive);
+
+    const displayedCursor = this.getDisplayedCursorState();
+    this.scene.setSelectedIndices(displayedCursor.selectedIndices);
+    this.scene.setFocusedIndex(displayedCursor.focusedIndex);
   }
 
   private render(): void {
     const snapshot = this.snapshot;
+    const roomState = this.roomState;
     const currentPlayer = snapshot?.current_player ?? 'A';
     const uiBusy = this.uiBusy;
     const roundScoreA = currentPlayer === 'A' ? snapshot?.turn_points ?? 0 : 0;
     const roundScoreB = currentPlayer === 'B' ? snapshot?.turn_points ?? 0 : 0;
     const selectedScoreA = currentPlayer === 'A' && this.preview?.is_valid ? this.preview.points : 0;
     const selectedScoreB = currentPlayer === 'B' && this.preview?.is_valid ? this.preview.points : 0;
+    const localSeat = this.session?.seat ?? null;
+    const isLocalTurn = !!snapshot && !!localSeat && this.isLocalTurn(snapshot);
     const canCommitSelection = snapshot?.phase === 'awaiting_selection' && this.hasValidPreview();
     const canPrimaryAct =
       !uiBusy &&
       this.hudVisible &&
       !this.setupVisible &&
       !!snapshot &&
+      !!localSeat &&
+      isLocalTurn &&
       (snapshot.phase === 'ready_to_roll'
         ? snapshot.available_actions.roll
         : snapshot.phase === 'awaiting_selection'
@@ -518,11 +958,22 @@ export class GameApp {
       this.hudVisible &&
       !this.setupVisible &&
       !!snapshot &&
+      !!localSeat &&
+      isLocalTurn &&
       (snapshot.phase === 'awaiting_selection'
         ? canCommitSelection
         : snapshot.phase === 'can_bank_or_continue'
           ? snapshot.available_actions.bank_turn
           : false);
+    const seatAState = roomState?.seats.A;
+    const seatBState = roomState?.seats.B;
+    const seatAOwnedByOther = !!seatAState?.occupied && localSeat !== 'A';
+    const seatBOwnedByOther = !!seatBState?.occupied && localSeat !== 'B';
+    const setupButtonLabel = !this.session
+      ? `加入玩家 ${this.selectedSeat}`
+      : this.session.seat === 'A'
+        ? '开始新对局'
+        : '进入当前对局';
 
     this.elements.scoreA.textContent = `${snapshot?.scores.A ?? 0}`;
     this.elements.scoreB.textContent = `${snapshot?.scores.B ?? 0}`;
@@ -538,10 +989,34 @@ export class GameApp {
     this.elements.selectedScoreA.classList.toggle('is-active', currentPlayer === 'A');
     this.elements.selectedScoreB.classList.toggle('is-active', currentPlayer === 'B');
     this.elements.rollButton.textContent = snapshot?.phase === 'ready_to_roll' || !snapshot ? '掷骰' : '继续掷骰';
-    this.elements.newGameButton.disabled = uiBusy;
-    this.elements.victoryNewGameButton.disabled = uiBusy;
     this.elements.rollButton.disabled = !canPrimaryAct;
     this.elements.bankButton.disabled = !canBankAct;
+    this.elements.newGameButton.textContent = setupButtonLabel;
+    this.elements.newGameButton.disabled =
+      uiBusy || (this.selectedSeat === 'A' ? seatAOwnedByOther : seatBOwnedByOther);
+    this.elements.victoryNewGameButton.disabled = uiBusy;
+
+    this.elements.seatAButton.textContent = this.buildSeatButtonLabel('A', seatAState);
+    this.elements.seatBButton.textContent = this.buildSeatButtonLabel('B', seatBState);
+    this.elements.seatAButton.classList.toggle('is-selected', this.selectedSeat === 'A');
+    this.elements.seatBButton.classList.toggle('is-selected', this.selectedSeat === 'B');
+    this.elements.seatAButton.classList.toggle('is-owned', localSeat === 'A');
+    this.elements.seatBButton.classList.toggle('is-owned', localSeat === 'B');
+    this.elements.seatAButton.classList.toggle('is-unavailable', seatAOwnedByOther);
+    this.elements.seatBButton.classList.toggle('is-unavailable', seatBOwnedByOther);
+    this.elements.seatAButton.disabled = uiBusy || seatAOwnedByOther;
+    this.elements.seatBButton.disabled = uiBusy || seatBOwnedByOther;
+    this.elements.seatStatus.textContent = this.buildSeatStatusText(roomState);
+
+    this.elements.localSeatChip.textContent = localSeat ? `你是玩家 ${localSeat}` : '未入座';
+    this.elements.localSeatChip.classList.toggle('is-active', !!localSeat);
+
+    if (this.backendConnected) {
+      this.elements.connectionBadge.textContent = localSeat ? `后端已连接 · 玩家 ${localSeat}` : '后端已连接';
+    } else {
+      this.elements.connectionBadge.textContent = '后端未连接';
+    }
+
     this.elements.statusPanel.classList.toggle('is-hidden', !this.hudVisible);
     this.elements.actionPanel.classList.toggle('is-hidden', !this.hudVisible);
     this.elements.setupOverlay.classList.toggle('is-visible', this.setupVisible);
@@ -549,8 +1024,34 @@ export class GameApp {
     this.elements.setupForm.classList.toggle('is-visible', this.setupVisible);
     this.elements.setupForm.setAttribute('aria-hidden', String(!this.setupVisible));
     this.scene.setInteractive(
-      this.hudVisible && !this.setupVisible && snapshot?.phase === 'awaiting_selection' && !uiBusy,
+      this.hudVisible &&
+        !this.setupVisible &&
+        snapshot?.phase === 'awaiting_selection' &&
+        !uiBusy &&
+        !!snapshot &&
+        isLocalTurn,
     );
+  }
+
+  private buildSeatButtonLabel(seat: SeatId, state: RoomState['seats'][SeatId] | undefined): string {
+    const suffix = !state ? '空闲' : state.connected ? '已连接' : state.occupied ? '已占用' : '空闲';
+    return `玩家 ${seat} · ${suffix}`;
+  }
+
+  private buildSeatStatusText(roomState: RoomState | null): string {
+    if (!roomState) {
+      return '正在读取房间状态...';
+    }
+
+    const formatSeat = (seat: SeatId): string => {
+      const state = roomState.seats[seat];
+      if (!state.occupied) {
+        return `玩家 ${seat}：空闲`;
+      }
+      return `玩家 ${seat}：${state.connected ? '已连接' : '已占用'}`;
+    };
+
+    return `${formatSeat('A')}　|　${formatSeat('B')}`;
   }
 
   private hasValidPreview(): boolean {
@@ -586,7 +1087,7 @@ export class GameApp {
     }
 
     if (responseMessage === 'Started a new game.') {
-      this.showBanner('新对局已开始', 'info');
+      this.showBanner('新对局已开始。', 'info');
       return;
     }
 
@@ -595,28 +1096,28 @@ export class GameApp {
     }
 
     if (previousSnapshot.current_player !== nextSnapshot.current_player) {
-      this.showBanner(`轮到玩家 ${nextSnapshot.current_player}`, 'info');
+      this.showBanner(`轮到玩家 ${nextSnapshot.current_player}。`, 'info');
       return;
     }
 
     if (previousSnapshot.phase !== nextSnapshot.phase) {
       if (nextSnapshot.phase === 'farkle') {
-        this.showBanner('爆骰，本回合暂存已清空', 'warn');
+        this.showBanner('爆骰，本回合暂存已清空。', 'warn');
         return;
       }
 
       if (nextSnapshot.phase === 'awaiting_selection') {
-        this.showBanner('请选择要计分的骰子', 'info');
+        this.showBanner('请选择要计分的骰子。', 'info');
         return;
       }
 
       if (nextSnapshot.phase === 'can_bank_or_continue') {
-        this.showBanner('已完成计分，可以继续掷骰或入账', 'info');
+        this.showBanner('已完成计分，可以继续掷骰或入账。', 'info');
         return;
       }
 
       if (nextSnapshot.phase === 'ready_to_roll') {
-        this.showBanner(`等待玩家 ${nextSnapshot.current_player} 掷骰`, 'info');
+        this.showBanner(`等待玩家 ${nextSnapshot.current_player} 掷骰。`, 'info');
       }
     }
   }
@@ -660,12 +1161,7 @@ export class GameApp {
   }
 
   private buildVictoryKey(snapshot: GameSnapshot): string {
-    return [
-      snapshot.winner ?? 'none',
-      snapshot.scores.A ?? 0,
-      snapshot.scores.B ?? 0,
-      snapshot.target_score,
-    ].join(':');
+    return [snapshot.winner ?? 'none', snapshot.scores.A ?? 0, snapshot.scores.B ?? 0, snapshot.target_score].join(':');
   }
 
   private launchConfetti(): void {
@@ -707,7 +1203,6 @@ export class GameApp {
     window.clearTimeout(this.confettiCleanupId);
     this.confettiCleanupId = null;
   }
-
   private showBanner(message: string, tone: 'info' | 'warn' | 'success', persist = false): void {
     const banner = this.elements.phaseBanner;
 
@@ -757,7 +1252,7 @@ export class GameApp {
       return error.message;
     }
 
-    return '请求失败';
+    return '请求失败。';
   }
 }
 

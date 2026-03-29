@@ -1,4 +1,4 @@
-import './style.css';
+﻿import './style.css';
 import { GameApp } from './app/GameApp';
 import { TrayScene } from './scene/TrayScene';
 
@@ -20,12 +20,18 @@ root.innerHTML = `
           <h1 class="setup-title">掷骰台</h1>
         </div>
         <div id="setup-form" class="setup-form is-visible" aria-hidden="false">
+          <div class="setup-help">请选择玩家座位。玩家 A 可以开始新对局，玩家 B 可以加入同一局。</div>
+          <div class="seat-picker" role="group" aria-label="seat picker">
+            <button id="seat-a-button" class="seat-button is-selected" type="button">玩家 A</button>
+            <button id="seat-b-button" class="seat-button" type="button">玩家 B</button>
+          </div>
+          <div id="seat-status" class="seat-status">玩家 A：空闲　|　玩家 B：空闲</div>
           <label class="field">
             <span>目标分数</span>
             <input id="target-score" type="number" min="0" step="500" value="5000" />
           </label>
           <div class="setup-actions">
-            <button id="new-game-button" class="primary-button" type="button">开始游戏</button>
+            <button id="new-game-button" class="primary-button" type="button">开始新对局</button>
           </div>
           <span id="connection-badge" class="badge badge-offline">后端未连接</span>
         </div>
@@ -36,7 +42,7 @@ root.innerHTML = `
       <div id="confetti-layer" class="confetti-layer"></div>
       <div class="victory-panel" role="dialog" aria-modal="false" aria-labelledby="victory-title">
         <div class="victory-eyebrow">对局结束</div>
-        <h2 id="victory-title" class="victory-title">胜利结算</h2>
+        <h2 id="victory-title" class="victory-title">玩家 A 获胜</h2>
         <div class="victory-grid">
           <div class="victory-label">获胜玩家</div>
           <div id="victory-winner" class="victory-value victory-value-accent">玩家 A</div>
@@ -78,7 +84,10 @@ root.innerHTML = `
     </div>
 
     <div id="action-panel" class="hud hud-bottom-right action-panel is-hidden">
-      <div class="hud-title">操作</div>
+      <div class="action-panel-head">
+        <div class="hud-title">操作</div>
+        <div id="local-seat-chip" class="seat-chip">未入座</div>
+      </div>
       <div class="button-grid">
         <button id="roll-button" type="button">掷骰</button>
         <button id="bank-button" type="button">保存分数并结束回合</button>
