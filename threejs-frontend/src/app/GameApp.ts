@@ -1,4 +1,4 @@
-import {
+﻿import {
   DEFAULT_ROOM_ID,
   bankCurrentTurn,
   buildRoomSocketUrl,
@@ -14,10 +14,25 @@ import {
   setSessionInfo,
   takeSelection,
 } from '../api/gameApi';
+import {
+  getHotseatSessionInfo,
+  getHotseatState,
+  hotseatBankCurrentTurn,
+  hotseatContinuePlaying,
+  hotseatPreviewSelection,
+  hotseatResolveFarkleTurn,
+  hotseatRollDice,
+  hotseatTakeSelection,
+  releaseHotseatGame,
+  setHotseatSessionInfo,
+  startHotseatGame,
+} from '../api/hotseatApi';
 import { TrayScene } from '../scene/TrayScene';
 import type {
   GameActionResponse,
+  GameMode,
   GameSnapshot,
+  HotseatSessionInfo,
   JoinRoomResponse,
   PreviewPayload,
   RoomEvent,
@@ -30,6 +45,10 @@ interface ElementMap {
   targetInput: HTMLInputElement;
   setupOverlay: HTMLElement;
   setupForm: HTMLElement;
+  setupHelp: HTMLElement;
+  seatPicker: HTMLElement;
+  modeLanButton: HTMLButtonElement;
+  modeHotseatButton: HTMLButtonElement;
   newGameButton: HTMLButtonElement;
   victoryNewGameButton: HTMLButtonElement;
   seatAButton: HTMLButtonElement;
@@ -68,7 +87,9 @@ interface ActionOptions {
 }
 
 const CONFETTI_COLORS = ['#f0c662', '#dd7d56', '#6aa9d7', '#7bb66f', '#c86bb1', '#f4e8bf'];
-const SESSION_STORAGE_KEY = 'kcd2gamble.lan.session';
+const LAN_SESSION_STORAGE_KEY = 'kcd2gamble.lan.session';
+const HOTSEAT_SESSION_STORAGE_KEY = 'kcd2gamble.hotseat.session';
+const MODE_STORAGE_KEY = 'kcd2gamble.mode';
 const SOCKET_RECONNECT_DELAY_MS = 1500;
 
 export class GameApp {
@@ -77,7 +98,9 @@ export class GameApp {
   private snapshot: GameSnapshot | null = null;
   private roomState: RoomState | null = null;
   private preview: PreviewPayload | null = null;
-  private session: SessionInfo | null = null;
+  private lanSession: SessionInfo | null = null;
+  private hotseatSession: HotseatSessionInfo | null = null;
+  private mode: GameMode = 'lan';
   private selectedSeat: SeatId = 'A';
   private selectedIndices: number[] = [];
   private roomSocket: WebSocket | null = null;
@@ -97,8 +120,10 @@ export class GameApp {
   constructor(root: HTMLElement, scene: TrayScene) {
     this.scene = scene;
     this.elements = this.collectElements(root);
-    this.session = getSessionInfo();
-    this.selectedSeat = this.session?.seat ?? 'A';
+    this.lanSession = getSessionInfo();
+    this.hotseatSession = getHotseatSessionInfo();
+    this.mode = this.loadStoredMode();
+    this.selectedSeat = this.lanSession?.seat ?? 'A';
     this.bindEvents();
     this.scene.setDieClickHandler((index) => {
       void this.toggleDie(index);
@@ -107,19 +132,10 @@ export class GameApp {
   }
 
   async init(): Promise<void> {
-    await this.refreshRoomState(false);
+    const restored = await this.restoreStoredSession();
 
-    const storedSession = this.loadStoredSession();
-    if (storedSession) {
-      try {
-        await this.joinSeat(storedSession.seat, storedSession.seat_token, false);
-        this.hudVisible = true;
-        this.setupVisible = false;
-        await this.scene.transitionToPlayView();
-      } catch (error) {
-        this.clearSessionState();
-        this.showBanner(this.describeError(error), 'warn');
-      }
+    if (!restored && this.mode === 'lan') {
+      await this.refreshLanRoomState(false);
     }
 
     this.scene.setDiceValues(this.snapshot?.current_roll ?? []);
@@ -143,11 +159,9 @@ export class GameApp {
   private collectElements(root: HTMLElement): ElementMap {
     const query = <T extends HTMLElement>(selector: string): T => {
       const element = root.querySelector<T>(selector);
-
       if (!element) {
         throw new Error(`Missing element: ${selector}`);
       }
-
       return element;
     };
 
@@ -155,6 +169,10 @@ export class GameApp {
       targetInput: query<HTMLInputElement>('#target-score'),
       setupOverlay: query<HTMLElement>('#setup-overlay'),
       setupForm: query<HTMLElement>('#setup-form'),
+      setupHelp: query<HTMLElement>('#setup-help'),
+      seatPicker: query<HTMLElement>('#seat-picker'),
+      modeLanButton: query<HTMLButtonElement>('#mode-lan-button'),
+      modeHotseatButton: query<HTMLButtonElement>('#mode-hotseat-button'),
       newGameButton: query<HTMLButtonElement>('#new-game-button'),
       victoryNewGameButton: query<HTMLButtonElement>('#victory-new-game-button'),
       seatAButton: query<HTMLButtonElement>('#seat-a-button'),
@@ -189,6 +207,12 @@ export class GameApp {
 
   private bindEvents(): void {
     window.addEventListener('keydown', this.handleKeyDown);
+    this.elements.modeLanButton.addEventListener('click', () => {
+      void this.handleModeSelection('lan');
+    });
+    this.elements.modeHotseatButton.addEventListener('click', () => {
+      void this.handleModeSelection('hotseat');
+    });
     this.elements.seatAButton.addEventListener('click', () => {
       this.handleSeatSelection('A');
     });
@@ -214,7 +238,7 @@ export class GameApp {
   }
 
   private readonly handleSceneFocusChanged = (focusedIndex: number | null): void => {
-    if (!this.snapshot || !this.isLocalTurn(this.snapshot) || this.snapshot.phase !== 'awaiting_selection') {
+    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection' || !this.isLocalTurn(this.snapshot)) {
       return;
     }
 
@@ -231,13 +255,11 @@ export class GameApp {
     }
 
     const activeElement = document.activeElement;
-
     if (
-      activeElement instanceof HTMLInputElement ||
       activeElement instanceof HTMLTextAreaElement ||
       activeElement instanceof HTMLSelectElement ||
-      activeElement instanceof HTMLButtonElement ||
-      activeElement?.hasAttribute('contenteditable')
+      activeElement?.hasAttribute('contenteditable') ||
+      (activeElement instanceof HTMLInputElement && activeElement.type !== 'button')
     ) {
       return;
     }
@@ -262,7 +284,6 @@ export class GameApp {
 
     if (key === 'e') {
       const focusedIndex = this.scene.getFocusedIndex();
-
       if (focusedIndex !== null) {
         event.preventDefault();
         void this.toggleDie(focusedIndex);
@@ -271,21 +292,9 @@ export class GameApp {
     }
 
     const direction =
-      key === 'w'
-        ? 'up'
-        : key === 'a'
-          ? 'left'
-          : key === 's'
-            ? 'down'
-            : key === 'd'
-              ? 'right'
-              : null;
+      key === 'w' ? 'up' : key === 'a' ? 'left' : key === 's' ? 'down' : key === 'd' ? 'right' : null;
 
-    if (!direction) {
-      return;
-    }
-
-    if (this.scene.moveFocus(direction)) {
+    if (direction && this.scene.moveFocus(direction)) {
       event.preventDefault();
     }
   };
@@ -294,10 +303,38 @@ export class GameApp {
     return this.busy || this.presentationBusy;
   }
 
+  private get localSeat(): SeatId | null {
+    return this.mode === 'lan' ? this.lanSession?.seat ?? null : null;
+  }
+
   private markConnection(connected: boolean): void {
     this.backendConnected = connected;
     this.elements.connectionBadge.classList.toggle('badge-online', connected);
     this.elements.connectionBadge.classList.toggle('badge-offline', !connected);
+  }
+
+  private async handleModeSelection(mode: GameMode): Promise<void> {
+    if (this.mode === mode || this.uiBusy) {
+      return;
+    }
+
+    if (this.setupVisible) {
+      if (this.mode === 'lan' && this.lanSession) {
+        await this.leaveCurrentSeat(false);
+      }
+      if (this.mode === 'hotseat' && this.hotseatSession) {
+        await this.releaseCurrentHotseat(false);
+      }
+    }
+
+    this.mode = mode;
+    this.saveStoredMode(mode);
+
+    if (mode === 'lan') {
+      await this.refreshLanRoomState(false);
+    }
+
+    this.render();
   }
 
   private handleSeatSelection(seat: SeatId): void {
@@ -307,12 +344,15 @@ export class GameApp {
 
   private openSetupOverlay(): void {
     this.setupVisible = true;
-    void this.refreshRoomState(false);
+    if (this.mode === 'lan') {
+      void this.refreshLanRoomState(false);
+    }
     this.render();
   }
 
   private closeSetupOverlay(): void {
     this.setupVisible = false;
+    this.blurActiveElement();
     this.render();
   }
 
@@ -322,17 +362,29 @@ export class GameApp {
     }
 
     const targetScore = Number.parseInt(this.elements.targetInput.value, 10);
-
     if (!Number.isInteger(targetScore) || targetScore <= 0) {
       this.showBanner('目标分数必须是正整数。', 'warn');
       return;
     }
 
-    if (this.session && this.session.seat !== this.selectedSeat) {
-      await this.leaveCurrentSeat();
+    if (this.mode === 'hotseat') {
+      await this.startHotseatFlow(targetScore);
+      return;
     }
 
-    if (!this.session) {
+    await this.startLanFlow(targetScore);
+  }
+
+  private async startLanFlow(targetScore: number): Promise<void> {
+    if (this.hotseatSession) {
+      await this.releaseCurrentHotseat(false);
+    }
+
+    if (this.lanSession && this.lanSession.seat !== this.selectedSeat) {
+      await this.leaveCurrentSeat(false);
+    }
+
+    if (!this.lanSession) {
       try {
         await this.joinSeat(this.selectedSeat, null, true);
       } catch (error) {
@@ -343,7 +395,7 @@ export class GameApp {
       }
     }
 
-    if (this.session?.seat === 'A') {
+    if (this.lanSession?.seat === 'A') {
       await this.runAction(() => newGame({ target_score: targetScore }), {
         pendingMessage: '正在开始新对局...',
         onSuccess: async () => {
@@ -362,24 +414,92 @@ export class GameApp {
     this.hudVisible = true;
     this.closeSetupOverlay();
     await this.scene.transitionToPlayView();
-    this.showBanner('已进入对局，等待玩家 A 开始或轮到你。', 'info');
+    this.showBanner('已进入当前对局，等待玩家 A 开始或轮到你。', 'info');
     this.render();
   }
 
-  private async joinSeat(seat: SeatId, seatToken: string | null, announce = true): Promise<JoinRoomResponse> {
-    const response = await joinRoom({
-      room_id: DEFAULT_ROOM_ID,
-      seat,
-      seat_token: seatToken,
-    });
+  private async startHotseatFlow(targetScore: number): Promise<void> {
+    if (this.lanSession) {
+      await this.leaveCurrentSeat(false);
+    }
 
+    await this.runBusyTask('正在开始同屏对局...', async () => {
+      const response = await startHotseatGame({ target_score: targetScore });
+      this.markConnection(true);
+      this.mode = 'hotseat';
+      this.saveStoredMode('hotseat');
+      this.hotseatSession = response.session;
+      this.saveStoredHotseatSession(response.session);
+      this.snapshot = response.snapshot;
+      this.roomState = response.room;
+      this.preview = null;
+      this.selectedIndices = [];
+      this.previewToken += 1;
+      this.lastSentCursorSignature = null;
+      this.presentedVictoryKey = null;
+      this.hideVictoryOverlay();
+      this.clearConfetti();
+      this.scene.clearTakenDice();
+      this.hudVisible = true;
+      this.closeSetupOverlay();
+      await this.scene.transitionToPlayView();
+      this.syncScene();
+      this.showBanner('同屏对局已开始。', 'success');
+      this.render();
+    });
+  }
+
+  private async restoreStoredSession(): Promise<boolean> {
+    const storedLan = this.loadStoredLanSession();
+    const storedHotseat = this.loadStoredHotseatSession();
+    const restoreOrder: GameMode[] = this.mode === 'hotseat' ? ['hotseat', 'lan'] : ['lan', 'hotseat'];
+
+    for (const candidate of restoreOrder) {
+      try {
+        if (candidate === 'lan' && storedLan) {
+          await this.joinSeat(storedLan.seat, storedLan.seat_token, false);
+          this.mode = 'lan';
+          this.hudVisible = true;
+          this.setupVisible = false;
+          await this.scene.transitionToPlayView();
+          return true;
+        }
+
+        if (candidate === 'hotseat' && storedHotseat) {
+          setHotseatSessionInfo(storedHotseat);
+          this.hotseatSession = storedHotseat;
+          const response = await getHotseatState();
+          this.markConnection(true);
+          this.mode = 'hotseat';
+          this.snapshot = response.snapshot;
+          this.roomState = response.room;
+          this.hudVisible = true;
+          this.setupVisible = false;
+          await this.scene.transitionToPlayView();
+          return true;
+        }
+      } catch {
+        if (candidate === 'lan') {
+          this.clearLanSessionState();
+        } else {
+          this.clearHotseatSessionState();
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private async joinSeat(seat: SeatId, seatToken: string | null, announce = true): Promise<JoinRoomResponse> {
+    const response = await joinRoom({ room_id: DEFAULT_ROOM_ID, seat, seat_token: seatToken });
     this.markConnection(true);
-    this.session = response.session;
+    this.mode = 'lan';
+    this.saveStoredMode('lan');
+    this.lanSession = response.session;
     this.selectedSeat = response.session.seat;
     this.snapshot = response.snapshot;
     this.roomState = response.room;
-    setSessionInfo(response.session);
-    this.saveStoredSession(response.session);
+    this.saveStoredLanSession(response.session);
     this.openRoomSocket();
 
     if (announce) {
@@ -389,8 +509,8 @@ export class GameApp {
     return response;
   }
 
-  private async leaveCurrentSeat(): Promise<void> {
-    if (!this.session) {
+  private async leaveCurrentSeat(showBanner = false): Promise<void> {
+    if (!this.lanSession) {
       return;
     }
 
@@ -400,20 +520,42 @@ export class GameApp {
         this.snapshot = response.snapshot;
         this.roomState = response.room;
       }
+      if (showBanner) {
+        this.showBanner('已离开当前座位。', 'info');
+      }
     } catch {
-      // Ignore leave errors during seat switching.
+      // Ignore leave errors during mode switching.
     }
 
-    this.clearSessionState();
-    await this.refreshRoomState(false);
+    this.clearLanSessionState();
+    if (this.mode === 'lan') {
+      await this.refreshLanRoomState(false);
+    }
   }
 
-  private openRoomSocket(): void {
-    if (!this.session) {
+  private async releaseCurrentHotseat(showBanner = false): Promise<void> {
+    if (!this.hotseatSession) {
       return;
     }
 
-    const url = buildRoomSocketUrl(this.session);
+    try {
+      await releaseHotseatGame();
+      if (showBanner) {
+        this.showBanner('已结束同屏对局会话。', 'info');
+      }
+    } catch {
+      // Ignore release errors during mode switching.
+    }
+
+    this.clearHotseatSessionState();
+  }
+
+  private openRoomSocket(): void {
+    if (!this.lanSession) {
+      return;
+    }
+
+    const url = buildRoomSocketUrl(this.lanSession);
     if (this.roomSocket && (this.roomSocket.readyState === WebSocket.OPEN || this.roomSocket.readyState === WebSocket.CONNECTING)) {
       if (this.roomSocket.url === url) {
         return;
@@ -451,26 +593,26 @@ export class GameApp {
       }
 
       if (event.code === 4403) {
-        this.clearSessionState();
+        this.clearLanSessionState();
         this.hudVisible = false;
         this.openSetupOverlay();
-        this.showBanner('座位已失效，请重新加入。', 'warn');
+        this.showBanner('座位凭证已失效，请重新加入。', 'warn');
         return;
       }
 
       this.markConnection(false);
-      if (this.session) {
+      if (this.lanSession) {
         this.scheduleSocketReconnect();
       }
     });
 
     socket.addEventListener('error', () => {
-      if (this.roomSocket !== socket) {
-        return;
+      if (this.roomSocket === socket) {
+        this.markConnection(false);
       }
-      this.markConnection(false);
     });
   }
+
   private closeRoomSocket(): void {
     if (!this.roomSocket) {
       return;
@@ -482,13 +624,13 @@ export class GameApp {
   }
 
   private scheduleSocketReconnect(): void {
-    if (this.socketReconnectId !== null || !this.session) {
+    if (this.socketReconnectId !== null || !this.lanSession) {
       return;
     }
 
     this.socketReconnectId = window.setTimeout(() => {
       this.socketReconnectId = null;
-      if (!this.disposed && this.session) {
+      if (!this.disposed && this.lanSession) {
         this.openRoomSocket();
       }
     }, SOCKET_RECONNECT_DELAY_MS);
@@ -516,7 +658,7 @@ export class GameApp {
         return;
       }
 
-      if (this.session && event.actor_seat === this.session.seat && this.busy) {
+      if (this.lanSession && event.actor_seat === this.lanSession.seat && this.busy) {
         this.render();
         return;
       }
@@ -532,13 +674,13 @@ export class GameApp {
     }
   }
 
-  private async refreshRoomState(showError = true): Promise<void> {
+  private async refreshLanRoomState(showError = true): Promise<void> {
     try {
       const response = await getRoomState(DEFAULT_ROOM_ID);
       this.markConnection(true);
       this.snapshot = response.snapshot;
       this.roomState = response.room;
-      if (!this.session) {
+      if (!this.lanSession) {
         this.elements.targetInput.value = `${response.snapshot.target_score ?? 5000}`;
       }
     } catch (error) {
@@ -549,9 +691,9 @@ export class GameApp {
     }
   }
 
-  private loadStoredSession(): SessionInfo | null {
+  private loadStoredLanSession(): SessionInfo | null {
     try {
-      const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+      const raw = window.localStorage.getItem(LAN_SESSION_STORAGE_KEY);
       if (!raw) {
         return null;
       }
@@ -560,7 +702,7 @@ export class GameApp {
         return null;
       }
       setSessionInfo(parsed);
-      this.session = parsed;
+      this.lanSession = parsed;
       this.selectedSeat = parsed.seat;
       return parsed;
     } catch {
@@ -568,28 +710,76 @@ export class GameApp {
     }
   }
 
-  private saveStoredSession(session: SessionInfo): void {
-    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  private saveStoredLanSession(session: SessionInfo): void {
+    window.localStorage.setItem(LAN_SESSION_STORAGE_KEY, JSON.stringify(session));
+    setSessionInfo(session);
+    this.lanSession = session;
   }
 
-  private clearSessionState(): void {
+  private clearLanSessionState(): void {
     this.closeRoomSocket();
     this.clearSocketReconnectTimer();
-    this.session = null;
+    this.lanSession = null;
     this.lastSentCursorSignature = null;
     setSessionInfo(null);
-    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    window.localStorage.removeItem(LAN_SESSION_STORAGE_KEY);
+  }
+
+  private loadStoredHotseatSession(): HotseatSessionInfo | null {
+    try {
+      const raw = window.sessionStorage.getItem(HOTSEAT_SESSION_STORAGE_KEY);
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw) as HotseatSessionInfo;
+      if (!parsed.session_token) {
+        return null;
+      }
+      setHotseatSessionInfo(parsed);
+      this.hotseatSession = parsed;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveStoredHotseatSession(session: HotseatSessionInfo): void {
+    window.sessionStorage.setItem(HOTSEAT_SESSION_STORAGE_KEY, JSON.stringify(session));
+    setHotseatSessionInfo(session);
+    this.hotseatSession = session;
+  }
+
+  private clearHotseatSessionState(): void {
+    this.hotseatSession = null;
+    setHotseatSessionInfo(null);
+    window.sessionStorage.removeItem(HOTSEAT_SESSION_STORAGE_KEY);
+  }
+
+  private blurActiveElement(): void {
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) {
+      activeElement.blur();
+    }
+  }
+
+  private loadStoredMode(): GameMode {
+    const stored = window.localStorage.getItem(MODE_STORAGE_KEY);
+    return stored === 'hotseat' ? 'hotseat' : 'lan';
+  }
+
+  private saveStoredMode(mode: GameMode): void {
+    window.localStorage.setItem(MODE_STORAGE_KEY, mode);
   }
 
   private releaseSeatOnUnload(): void {
-    if (!this.session) {
+    if (!this.lanSession) {
       return;
     }
 
     const payload = JSON.stringify({
-      room_id: this.session.room_id,
-      seat: this.session.seat,
-      seat_token: this.session.seat_token,
+      room_id: this.lanSession.room_id,
+      seat: this.lanSession.seat,
+      seat_token: this.lanSession.seat_token,
     });
     const url = `${window.location.origin}/api/room/leave`;
     const body = new Blob([payload], { type: 'application/json' });
@@ -609,15 +799,15 @@ export class GameApp {
       // Ignore unload errors.
     }
 
-    this.clearSessionState();
+    this.clearLanSessionState();
   }
 
   private isLocalTurn(snapshot: GameSnapshot): boolean {
-    return this.session?.seat === snapshot.current_player;
+    return this.mode === 'hotseat' || this.lanSession?.seat === snapshot.current_player;
   }
 
   private getDisplayedCursorState(): { focusedIndex: number | null; selectedIndices: number[] } {
-    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection' || !this.roomState) {
+    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection') {
       return { focusedIndex: null, selectedIndices: [] };
     }
 
@@ -628,7 +818,7 @@ export class GameApp {
       };
     }
 
-    const remoteCursor = this.roomState.cursors[this.snapshot.current_player];
+    const remoteCursor = this.roomState?.cursors[this.snapshot.current_player];
     return {
       focusedIndex: remoteCursor?.focused_index ?? null,
       selectedIndices: [...(remoteCursor?.selected_indices ?? [])],
@@ -636,35 +826,32 @@ export class GameApp {
   }
 
   private updateLocalCursorState(focusedIndex: number | null = this.scene.getFocusedIndex()): void {
-    if (!this.snapshot || !this.roomState || !this.session) {
+    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection' || !this.isLocalTurn(this.snapshot)) {
       return;
     }
 
-    if (!this.isLocalTurn(this.snapshot) || this.snapshot.phase !== 'awaiting_selection') {
-      return;
+    if (this.mode === 'lan' && this.roomState && this.lanSession) {
+      this.roomState = {
+        ...this.roomState,
+        cursors: {
+          ...this.roomState.cursors,
+          [this.lanSession.seat]: {
+            focused_index: focusedIndex,
+            selected_indices: [...this.selectedIndices],
+          },
+        },
+      };
+      this.sendCursorUpdate(focusedIndex, this.selectedIndices);
     }
 
-    const nextCursor = {
-      focused_index: focusedIndex,
-      selected_indices: [...this.selectedIndices],
-    };
-
-    this.roomState = {
-      ...this.roomState,
-      cursors: {
-        ...this.roomState.cursors,
-        [this.session.seat]: nextCursor,
-      },
-    };
-
-    this.sendCursorUpdate(nextCursor.focused_index, nextCursor.selected_indices);
     this.render();
   }
 
   private sendCursorUpdate(focusedIndex: number | null, selectedIndices: number[]): void {
     if (
+      this.mode !== 'lan' ||
       !this.snapshot ||
-      !this.session ||
+      !this.lanSession ||
       !this.roomSocket ||
       this.roomSocket.readyState !== WebSocket.OPEN ||
       this.setupVisible ||
@@ -689,9 +876,32 @@ export class GameApp {
     this.roomSocket.send(signature);
   }
 
+  private async requestPreview(indices: number[]): Promise<GameActionResponse> {
+    return this.mode === 'hotseat' ? hotseatPreviewSelection(indices) : previewSelection(indices);
+  }
+
+  private async requestTakeSelection(indices: number[]): Promise<GameActionResponse> {
+    return this.mode === 'hotseat' ? hotseatTakeSelection(indices) : takeSelection(indices);
+  }
+
+  private async requestContinueTurn(): Promise<GameActionResponse> {
+    return this.mode === 'hotseat' ? hotseatContinuePlaying() : continuePlaying();
+  }
+
+  private async requestBankTurn(): Promise<GameActionResponse> {
+    return this.mode === 'hotseat' ? hotseatBankCurrentTurn() : bankCurrentTurn();
+  }
+
+  private async requestRoll(): Promise<GameActionResponse> {
+    return this.mode === 'hotseat' ? hotseatRollDice() : rollDice();
+  }
+
+  private async requestResolveFarkle(): Promise<GameActionResponse> {
+    return this.mode === 'hotseat' ? hotseatResolveFarkleTurn() : resolveFarkleTurn();
+  }
+
   private async handlePrimaryAction(): Promise<void> {
     const snapshot = this.snapshot;
-
     if (!snapshot || this.uiBusy || this.setupVisible || !this.isLocalTurn(snapshot)) {
       return;
     }
@@ -699,7 +909,7 @@ export class GameApp {
     if (snapshot.phase === 'ready_to_roll') {
       await this.runBusyTask('正在掷骰...', async () => {
         const startingDice = snapshot.remaining_dice || 6;
-        const response = await rollDice();
+        const response = await this.requestRoll();
         this.markConnection(true);
         await this.scene.playRollAnimation(response.snapshot.current_roll, startingDice);
         const finalResponse = await this.resolveFarkleIfNeeded(response);
@@ -716,16 +926,13 @@ export class GameApp {
       }
 
       await this.runBusyTask('正在拿走已计分骰子并继续掷骰...', async () => {
-        const selectedIndices = [...this.selectedIndices];
-        const takeResponse = await takeSelection(selectedIndices);
+        const selected = [...this.selectedIndices];
+        const takeResponse = await this.requestTakeSelection(selected);
         this.markConnection(true);
-        await this.scene.playTakeSelectionAnimation(selectedIndices, takeResponse.take_result?.hot_dice ?? false);
-        const continueResponse = await continuePlaying();
+        await this.scene.playTakeSelectionAnimation(selected, takeResponse.take_result?.hot_dice ?? false);
+        const continueResponse = await this.requestContinueTurn();
         this.markConnection(true);
-        await this.scene.playRollAnimation(
-          continueResponse.snapshot.current_roll,
-          takeResponse.snapshot.remaining_dice,
-        );
+        await this.scene.playRollAnimation(continueResponse.snapshot.current_roll, takeResponse.snapshot.remaining_dice);
         const finalResponse = await this.resolveFarkleIfNeeded(continueResponse);
         this.applyResponse(finalResponse, true);
       });
@@ -734,7 +941,7 @@ export class GameApp {
 
     if (snapshot.phase === 'can_bank_or_continue') {
       await this.runBusyTask('正在继续掷剩余骰子...', async () => {
-        const response = await continuePlaying();
+        const response = await this.requestContinueTurn();
         this.markConnection(true);
         await this.scene.playRollAnimation(response.snapshot.current_roll, snapshot.remaining_dice);
         const finalResponse = await this.resolveFarkleIfNeeded(response);
@@ -745,7 +952,6 @@ export class GameApp {
 
   private async handleSaveAndEndTurn(): Promise<void> {
     const snapshot = this.snapshot;
-
     if (!snapshot || this.uiBusy || this.setupVisible || !this.isLocalTurn(snapshot)) {
       return;
     }
@@ -758,11 +964,11 @@ export class GameApp {
       }
 
       await this.runBusyTask('正在保存本回合分数...', async () => {
-        const selectedIndices = [...this.selectedIndices];
-        const takeResponse = await takeSelection(selectedIndices);
+        const selected = [...this.selectedIndices];
+        const takeResponse = await this.requestTakeSelection(selected);
         this.markConnection(true);
-        await this.scene.playTakeSelectionAnimation(selectedIndices, takeResponse.take_result?.hot_dice ?? false);
-        const bankResponse = await bankCurrentTurn();
+        await this.scene.playTakeSelectionAnimation(selected, takeResponse.take_result?.hot_dice ?? false);
+        const bankResponse = await this.requestBankTurn();
         this.markConnection(true);
         this.applyResponse(bankResponse, true);
       });
@@ -770,25 +976,18 @@ export class GameApp {
     }
 
     if (snapshot.phase === 'can_bank_or_continue') {
-      await this.runAction(() => bankCurrentTurn(), {
+      await this.runAction(() => this.requestBankTurn(), {
         pendingMessage: '正在保存本回合分数...',
       });
     }
   }
 
   private async toggleDie(index: number): Promise<void> {
-    if (
-      !this.snapshot ||
-      this.snapshot.phase !== 'awaiting_selection' ||
-      this.uiBusy ||
-      this.setupVisible ||
-      !this.isLocalTurn(this.snapshot)
-    ) {
+    if (!this.snapshot || this.snapshot.phase !== 'awaiting_selection' || this.uiBusy || this.setupVisible || !this.isLocalTurn(this.snapshot)) {
       return;
     }
 
     const selected = new Set(this.selectedIndices);
-
     if (selected.has(index)) {
       selected.delete(index);
     } else {
@@ -801,18 +1000,18 @@ export class GameApp {
     this.updateLocalCursorState();
 
     if (this.selectedIndices.length === 0) {
+      this.render();
       return;
     }
 
     const token = ++this.previewToken;
 
     try {
-      const response = await previewSelection(this.selectedIndices);
-
+      const response = await this.requestPreview(this.selectedIndices);
       if (token !== this.previewToken) {
         return;
       }
-
+      this.markConnection(true);
       this.snapshot = response.snapshot;
       this.roomState = response.room;
       this.preview = response.preview ?? null;
@@ -821,7 +1020,6 @@ export class GameApp {
       if (token !== this.previewToken) {
         return;
       }
-
       this.preview = null;
       this.showBanner(this.describeError(error), 'warn');
     }
@@ -835,7 +1033,6 @@ export class GameApp {
     }
 
     this.busy = true;
-
     if (options.pendingMessage) {
       this.showBanner(options.pendingMessage, 'info');
     }
@@ -854,6 +1051,7 @@ export class GameApp {
       this.render();
     } finally {
       this.busy = false;
+      this.syncScene();
       this.render();
     }
   }
@@ -875,9 +1073,11 @@ export class GameApp {
       this.render();
     } finally {
       this.busy = false;
+      this.syncScene();
       this.render();
     }
   }
+
   private applyResponse(response: GameActionResponse, resetSelection: boolean): void {
     const previousSnapshot = this.snapshot;
     this.snapshot = response.snapshot;
@@ -894,13 +1094,14 @@ export class GameApp {
 
     if (
       response.message === 'Started a new game.' ||
+      response.message === 'Started a hotseat game.' ||
       this.snapshot.phase === 'game_over' ||
       (previousSnapshot !== null && previousSnapshot.current_player !== this.snapshot.current_player)
     ) {
       this.scene.clearTakenDice();
     }
 
-    if (response.message === 'Started a new game.' || this.snapshot.phase !== 'game_over') {
+    if (this.snapshot.phase !== 'game_over') {
       this.presentedVictoryKey = null;
     }
 
@@ -921,7 +1122,6 @@ export class GameApp {
 
     this.scene.setDiceValues(diceValues);
     this.scene.setInteractive(isInteractive);
-
     const displayedCursor = this.getDisplayedCursorState();
     this.scene.setSelectedIndices(displayedCursor.selectedIndices);
     this.scene.setFocusedIndex(displayedCursor.focusedIndex);
@@ -936,44 +1136,52 @@ export class GameApp {
     const roundScoreB = currentPlayer === 'B' ? snapshot?.turn_points ?? 0 : 0;
     const selectedScoreA = currentPlayer === 'A' && this.preview?.is_valid ? this.preview.points : 0;
     const selectedScoreB = currentPlayer === 'B' && this.preview?.is_valid ? this.preview.points : 0;
-    const localSeat = this.session?.seat ?? null;
-    const isLocalTurn = !!snapshot && !!localSeat && this.isLocalTurn(snapshot);
-    const canCommitSelection = snapshot?.phase === 'awaiting_selection' && this.hasValidPreview();
-    const canPrimaryAct =
+    const localSeat = this.localSeat;
+    const canControlCurrentTurn =
       !uiBusy &&
       this.hudVisible &&
       !this.setupVisible &&
       !!snapshot &&
-      !!localSeat &&
-      isLocalTurn &&
-      (snapshot.phase === 'ready_to_roll'
+      this.isLocalTurn(snapshot) &&
+      (this.mode === 'hotseat' || !!localSeat);
+    const canCommitSelection = snapshot?.phase === 'awaiting_selection' && this.hasValidPreview();
+    const canPrimaryAct =
+      canControlCurrentTurn &&
+      (snapshot?.phase === 'ready_to_roll'
         ? snapshot.available_actions.roll
-        : snapshot.phase === 'awaiting_selection'
+        : snapshot?.phase === 'awaiting_selection'
           ? canCommitSelection
-          : snapshot.phase === 'can_bank_or_continue'
+          : snapshot?.phase === 'can_bank_or_continue'
             ? snapshot.available_actions.continue_turn
             : false);
     const canBankAct =
-      !uiBusy &&
-      this.hudVisible &&
-      !this.setupVisible &&
-      !!snapshot &&
-      !!localSeat &&
-      isLocalTurn &&
-      (snapshot.phase === 'awaiting_selection'
+      canControlCurrentTurn &&
+      (snapshot?.phase === 'awaiting_selection'
         ? canCommitSelection
-        : snapshot.phase === 'can_bank_or_continue'
+        : snapshot?.phase === 'can_bank_or_continue'
           ? snapshot.available_actions.bank_turn
           : false);
     const seatAState = roomState?.seats.A;
     const seatBState = roomState?.seats.B;
-    const seatAOwnedByOther = !!seatAState?.occupied && localSeat !== 'A';
-    const seatBOwnedByOther = !!seatBState?.occupied && localSeat !== 'B';
-    const setupButtonLabel = !this.session
-      ? `加入玩家 ${this.selectedSeat}`
-      : this.session.seat === 'A'
-        ? '开始新对局'
-        : '进入当前对局';
+    const seatAOwnedByOther = this.mode === 'lan' && !!seatAState?.occupied && localSeat !== 'A';
+    const seatBOwnedByOther = this.mode === 'lan' && !!seatBState?.occupied && localSeat !== 'B';
+    const setupButtonLabel =
+      this.mode === 'hotseat'
+        ? '开始同屏对局'
+        : !this.lanSession
+          ? `加入玩家 ${this.selectedSeat}`
+          : this.lanSession.seat === 'A'
+            ? '开始新对局'
+            : '进入当前对局';
+
+    this.elements.setupHelp.textContent =
+      this.mode === 'hotseat'
+        ? '同一个页面里由双方轮流操作，回合和胜负仍按玩家 A / B 计算。'
+        : '请选择玩家座位。玩家 A 可以开始新对局，玩家 B 可以加入同一局。';
+    this.elements.seatPicker.classList.toggle('is-hidden', this.mode !== 'lan');
+    this.elements.seatStatus.classList.toggle('is-hidden', this.mode !== 'lan');
+    this.elements.modeLanButton.classList.toggle('is-selected', this.mode === 'lan');
+    this.elements.modeHotseatButton.classList.toggle('is-selected', this.mode === 'hotseat');
 
     this.elements.scoreA.textContent = `${snapshot?.scores.A ?? 0}`;
     this.elements.scoreB.textContent = `${snapshot?.scores.B ?? 0}`;
@@ -993,7 +1201,7 @@ export class GameApp {
     this.elements.bankButton.disabled = !canBankAct;
     this.elements.newGameButton.textContent = setupButtonLabel;
     this.elements.newGameButton.disabled =
-      uiBusy || (this.selectedSeat === 'A' ? seatAOwnedByOther : seatBOwnedByOther);
+      this.mode === 'hotseat' ? uiBusy : uiBusy || (this.selectedSeat === 'A' ? seatAOwnedByOther : seatBOwnedByOther);
     this.elements.victoryNewGameButton.disabled = uiBusy;
 
     this.elements.seatAButton.textContent = this.buildSeatButtonLabel('A', seatAState);
@@ -1002,19 +1210,22 @@ export class GameApp {
     this.elements.seatBButton.classList.toggle('is-selected', this.selectedSeat === 'B');
     this.elements.seatAButton.classList.toggle('is-owned', localSeat === 'A');
     this.elements.seatBButton.classList.toggle('is-owned', localSeat === 'B');
-    this.elements.seatAButton.classList.toggle('is-unavailable', seatAOwnedByOther);
-    this.elements.seatBButton.classList.toggle('is-unavailable', seatBOwnedByOther);
-    this.elements.seatAButton.disabled = uiBusy || seatAOwnedByOther;
-    this.elements.seatBButton.disabled = uiBusy || seatBOwnedByOther;
-    this.elements.seatStatus.textContent = this.buildSeatStatusText(roomState);
+    this.elements.seatAButton.classList.toggle('is-unavailable', !!seatAOwnedByOther);
+    this.elements.seatBButton.classList.toggle('is-unavailable', !!seatBOwnedByOther);
+    this.elements.seatAButton.disabled = this.mode !== 'lan' || uiBusy || !!seatAOwnedByOther;
+    this.elements.seatBButton.disabled = this.mode !== 'lan' || uiBusy || !!seatBOwnedByOther;
+    this.elements.seatStatus.textContent = this.mode === 'lan' ? this.buildSeatStatusText(roomState) : '';
 
-    this.elements.localSeatChip.textContent = localSeat ? `你是玩家 ${localSeat}` : '未入座';
-    this.elements.localSeatChip.classList.toggle('is-active', !!localSeat);
+    this.elements.localSeatChip.textContent =
+      this.mode === 'hotseat' ? '同屏轮流' : localSeat ? `你是玩家 ${localSeat}` : '未入座';
+    this.elements.localSeatChip.classList.toggle('is-active', this.mode === 'hotseat' || !!localSeat);
 
-    if (this.backendConnected) {
-      this.elements.connectionBadge.textContent = localSeat ? `后端已连接 · 玩家 ${localSeat}` : '后端已连接';
-    } else {
+    if (!this.backendConnected) {
       this.elements.connectionBadge.textContent = '后端未连接';
+    } else if (this.mode === 'hotseat') {
+      this.elements.connectionBadge.textContent = this.hotseatSession ? '后端已连接 · 同屏模式' : '后端已连接';
+    } else {
+      this.elements.connectionBadge.textContent = localSeat ? `后端已连接 · 玩家 ${localSeat}` : '后端已连接';
     }
 
     this.elements.statusPanel.classList.toggle('is-hidden', !this.hudVisible);
@@ -1023,14 +1234,6 @@ export class GameApp {
     this.elements.setupOverlay.setAttribute('aria-hidden', String(!this.setupVisible));
     this.elements.setupForm.classList.toggle('is-visible', this.setupVisible);
     this.elements.setupForm.setAttribute('aria-hidden', String(!this.setupVisible));
-    this.scene.setInteractive(
-      this.hudVisible &&
-        !this.setupVisible &&
-        snapshot?.phase === 'awaiting_selection' &&
-        !uiBusy &&
-        !!snapshot &&
-        isLocalTurn,
-    );
   }
 
   private buildSeatButtonLabel(seat: SeatId, state: RoomState['seats'][SeatId] | undefined): string {
@@ -1065,7 +1268,7 @@ export class GameApp {
 
     this.hideBanner();
     await this.showCenterNotice('本轮作废！', 1000, 520);
-    const resolved = await resolveFarkleTurn();
+    const resolved = await this.requestResolveFarkle();
     this.markConnection(true);
     return resolved;
   }
@@ -1086,7 +1289,7 @@ export class GameApp {
       return;
     }
 
-    if (responseMessage === 'Started a new game.') {
+    if (responseMessage === 'Started a new game.' || responseMessage === 'Started a hotseat game.') {
       this.showBanner('新对局已开始。', 'info');
       return;
     }
@@ -1103,20 +1306,11 @@ export class GameApp {
     if (previousSnapshot.phase !== nextSnapshot.phase) {
       if (nextSnapshot.phase === 'farkle') {
         this.showBanner('爆骰，本回合暂存已清空。', 'warn');
-        return;
-      }
-
-      if (nextSnapshot.phase === 'awaiting_selection') {
+      } else if (nextSnapshot.phase === 'awaiting_selection') {
         this.showBanner('请选择要计分的骰子。', 'info');
-        return;
-      }
-
-      if (nextSnapshot.phase === 'can_bank_or_continue') {
+      } else if (nextSnapshot.phase === 'can_bank_or_continue') {
         this.showBanner('已完成计分，可以继续掷骰或入账。', 'info');
-        return;
-      }
-
-      if (nextSnapshot.phase === 'ready_to_roll') {
+      } else if (nextSnapshot.phase === 'ready_to_roll') {
         this.showBanner(`等待玩家 ${nextSnapshot.current_player} 掷骰。`, 'info');
       }
     }
@@ -1124,7 +1318,6 @@ export class GameApp {
 
   private async presentVictory(snapshot: GameSnapshot): Promise<void> {
     const victoryKey = this.buildVictoryKey(snapshot);
-
     if (this.presentedVictoryKey === victoryKey) {
       return;
     }
@@ -1142,7 +1335,7 @@ export class GameApp {
   }
 
   private populateVictory(snapshot: GameSnapshot): void {
-    const winnerLabel = snapshot.winner ? `玩家 ${snapshot.winner}` : '无人';
+    const winnerLabel = snapshot.winner ? `玩家 ${snapshot.winner}` : '无人获胜';
     this.elements.victoryTitle.textContent = snapshot.winner ? `玩家 ${snapshot.winner} 获胜` : '对局结束';
     this.elements.victoryWinner.textContent = winnerLabel;
     this.elements.victoryScoreA.textContent = `${snapshot.scores.A ?? 0}`;
@@ -1199,13 +1392,12 @@ export class GameApp {
     if (this.confettiCleanupId === null) {
       return;
     }
-
     window.clearTimeout(this.confettiCleanupId);
     this.confettiCleanupId = null;
   }
+
   private showBanner(message: string, tone: 'info' | 'warn' | 'success', persist = false): void {
     const banner = this.elements.phaseBanner;
-
     this.clearBannerTimer();
     banner.textContent = message;
     banner.classList.remove('banner-info', 'banner-warn', 'banner-success', 'is-persist');
@@ -1242,17 +1434,12 @@ export class GameApp {
     if (this.bannerTimeoutId === null) {
       return;
     }
-
     window.clearTimeout(this.bannerTimeoutId);
     this.bannerTimeoutId = null;
   }
 
   private describeError(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-
-    return '请求失败。';
+    return error instanceof Error ? error.message : '请求失败。';
   }
 }
 

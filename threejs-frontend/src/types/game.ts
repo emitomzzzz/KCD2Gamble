@@ -1,5 +1,7 @@
 export type SeatId = 'A' | 'B';
 
+export type GameMode = 'lan' | 'hotseat';
+
 export type GamePhase =
   | 'ready_to_roll'
   | 'awaiting_selection'
@@ -90,6 +92,10 @@ export interface SessionInfo {
   seat_token: string;
 }
 
+export interface HotseatSessionInfo {
+  session_token: string;
+}
+
 export interface RoomSnapshotResponse {
   message: string;
   snapshot: GameSnapshot;
@@ -99,6 +105,13 @@ export interface RoomSnapshotResponse {
 export interface JoinRoomResponse {
   message: string;
   session: SessionInfo;
+  snapshot: GameSnapshot;
+  room: RoomState;
+}
+
+export interface HotseatSnapshotResponse {
+  message: string;
+  session: HotseatSessionInfo;
   snapshot: GameSnapshot;
   room: RoomState;
 }

@@ -20,8 +20,12 @@ root.innerHTML = `
           <h1 class="setup-title">掷骰台</h1>
         </div>
         <div id="setup-form" class="setup-form is-visible" aria-hidden="false">
-          <div class="setup-help">请选择玩家座位。玩家 A 可以开始新对局，玩家 B 可以加入同一局。</div>
-          <div class="seat-picker" role="group" aria-label="seat picker">
+          <div class="mode-picker" role="group" aria-label="game mode picker">
+            <button id="mode-lan-button" class="mode-button is-selected" type="button">局域网双人对战</button>
+            <button id="mode-hotseat-button" class="mode-button" type="button">同屏轮流对战</button>
+          </div>
+          <div id="setup-help" class="setup-help">请选择玩家座位。玩家 A 可以开始新对局，玩家 B 可以加入同一局。</div>
+          <div id="seat-picker" class="seat-picker" role="group" aria-label="seat picker">
             <button id="seat-a-button" class="seat-button is-selected" type="button">玩家 A</button>
             <button id="seat-b-button" class="seat-button" type="button">玩家 B</button>
           </div>

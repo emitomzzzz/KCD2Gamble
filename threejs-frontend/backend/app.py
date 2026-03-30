@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 from dicegame.constants import DEFAULT_TARGET_SCORE
 from dicegame.engine import GameStateError
+from .hotseat_api import router as hotseat_router
 from .room_manager import (
     DEFAULT_ROOM_ID,
     SEATS,
@@ -177,6 +178,7 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+app.include_router(hotseat_router)
 
 FRONTEND_DIST = ROOT / 'threejs-frontend' / 'dist'
 
